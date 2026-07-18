@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/GTracker.App/GTracker.App.csproj" />
+    <Project Path="src/GTracker.Core/GTracker.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/GTracker.App.Tests/GTracker.App.Tests.csproj" />
+    <Project Path="tests/GTracker.Core.Tests/GTracker.Core.Tests.csproj" />
+  </Folder>
+</Solution>

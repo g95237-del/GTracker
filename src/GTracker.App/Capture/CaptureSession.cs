@@ -1,0 +1,135 @@
+using System.Diagnostics;
+using OpenCvSharp;
+
+namespace GTracker.App.Capture;
+
+public sealed class CaptureSession : IAsyncDisposable
+{
+    private readonly DxgiWindowCapture _capture;
+    private readonly CancellationTokenSource _shutdown = new();
+    private readonly int _recordingFps;
+    private Task? _captureTask;
+    private Task? _encoderTask;
+    private EncodeFrame? _pendingFrame;
+    private long _capturedFrames;
+    private long _encodedFrames;
+    private long _lastSampleTimestamp;
+    private int _faultRaised;
+
+    public CaptureSession(nint windowHandle, TimeSpan retention, int recordingFps = 20, long maximumBytes = 512L * 1024 * 1024)
+    {
+        _capture = new DxgiWindowCapture(windowHandle);
+        _recordingFps = Math.Clamp(recordingFps, 5, 30);
+        Buffer = new RollingJpegBuffer(retention, maximumBytes);
+    }
+
+    public RollingJpegBuffer Buffer { get; }
+    public long CapturedFrames => Interlocked.Read(ref _capturedFrames);
+    public long EncodedFrames => Interlocked.Read(ref _encodedFrames);
+    public event EventHandler<JpegFrame>? FrameEncoded;
+    public event EventHandler<Exception>? Faulted;
+
+    public void Start()
+    {
+        if (_captureTask is not null) throw new InvalidOperationException("Capture session is already started.");
+        _captureTask = Task.Run(() => CaptureLoopAsync(_shutdown.Token));
+        _encoderTask = Task.Run(() => EncoderLoopAsync(_shutdown.Token));
+    }
+
+    private async Task CaptureLoopAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1d / 60));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                var frame = _capture.TryCapture(7);
+                if (frame is null)
+                {
+                    continue;
+                }
+
+                Interlocked.Increment(ref _capturedFrames);
+                var timestamp = Stopwatch.GetTimestamp();
+                var sampleInterval = Stopwatch.Frequency / _recordingFps;
+                if (timestamp - Volatile.Read(ref _lastSampleTimestamp) < sampleInterval)
+                {
+                    frame.Dispose();
+                    continue;
+                }
+
+                Volatile.Write(ref _lastSampleTimestamp, timestamp);
+                Interlocked.Exchange(ref _pendingFrame, new(frame, timestamp, DateTimeOffset.UtcNow))?.Frame.Dispose();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            RaiseFault(exception);
+        }
+    }
+
+    private async Task EncoderLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var pending = Interlocked.Exchange(ref _pendingFrame, null);
+                if (pending is null)
+                {
+                    await Task.Delay(2, cancellationToken);
+                    continue;
+                }
+
+                using (pending.Frame)
+                using (var bgr = new Mat())
+                {
+                    Cv2.CvtColor(pending.Frame, bgr, ColorConversionCodes.BGRA2BGR);
+                    Cv2.ImEncode(".jpg", bgr, out var bytes,
+                        new ImageEncodingParam(ImwriteFlags.JpegQuality, 82));
+                    var encoded = new JpegFrame(pending.Timestamp, bytes, pending.Frame.Width, pending.Frame.Height, pending.CapturedAtUtc);
+                    Buffer.Add(encoded);
+                    Interlocked.Increment(ref _encodedFrames);
+                    FrameEncoded?.Invoke(this, encoded);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            RaiseFault(exception);
+        }
+    }
+
+    private void RaiseFault(Exception exception)
+    {
+        if (Interlocked.Exchange(ref _faultRaised, 1) == 0)
+        {
+            _shutdown.Cancel();
+            Faulted?.Invoke(this, exception);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _shutdown.Cancel();
+        try
+        {
+            await Task.WhenAll(new[] { _captureTask, _encoderTask }.Where(task => task is not null).Cast<Task>());
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        Interlocked.Exchange(ref _pendingFrame, null)?.Frame.Dispose();
+        _capture.Dispose();
+        Buffer.Clear();
+        _shutdown.Dispose();
+    }
+
+    private sealed record EncodeFrame(Mat Frame, long Timestamp, DateTimeOffset CapturedAtUtc);
+}
