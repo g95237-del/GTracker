@@ -8,24 +8,35 @@ public sealed class CaptureSession : IAsyncDisposable
     private readonly DxgiWindowCapture _capture;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly int _recordingFps;
+    private readonly CaptureCadence _cadence;
+    private readonly object _resolvedSamplesGate = new();
+    private readonly HashSet<long> _resolvedSamplesOutOfOrder = [];
     private Task? _captureTask;
     private Task? _encoderTask;
     private EncodeFrame? _pendingFrame;
     private long _capturedFrames;
+    private long _sampledFrames;
     private long _encodedFrames;
-    private long _lastSampleTimestamp;
+    private long _droppedBeforeEncodeFrames;
+    private long _captureAttemptedThroughUtcTicks;
+    private long _sampledThroughCaptureAttempt;
+    private long _resolvedThroughSample;
     private int _faultRaised;
 
-    public CaptureSession(nint windowHandle, TimeSpan retention, int recordingFps = 20, long maximumBytes = 512L * 1024 * 1024)
+    public CaptureSession(nint windowHandle, TimeSpan retention, int recordingFps = 30, long maximumBytes = 512L * 1024 * 1024)
     {
         _capture = new DxgiWindowCapture(windowHandle);
         _recordingFps = Math.Clamp(recordingFps, 5, 30);
+        _cadence = new CaptureCadence(_recordingFps);
         Buffer = new RollingJpegBuffer(retention, maximumBytes);
     }
 
     public RollingJpegBuffer Buffer { get; }
+    public int RecordingFps => _recordingFps;
     public long CapturedFrames => Interlocked.Read(ref _capturedFrames);
+    public long SampledFrames => Interlocked.Read(ref _sampledFrames);
     public long EncodedFrames => Interlocked.Read(ref _encodedFrames);
+    public long DroppedBeforeEncodeFrames => Interlocked.Read(ref _droppedBeforeEncodeFrames);
     public event EventHandler<JpegFrame>? FrameEncoded;
     public event EventHandler<Exception>? Faulted;
 
@@ -46,20 +57,29 @@ public sealed class CaptureSession : IAsyncDisposable
                 var frame = _capture.TryCapture(7);
                 if (frame is null)
                 {
+                    MarkCaptureAttemptComplete();
                     continue;
                 }
 
                 Interlocked.Increment(ref _capturedFrames);
                 var timestamp = Stopwatch.GetTimestamp();
-                var sampleInterval = Stopwatch.Frequency / _recordingFps;
-                if (timestamp - Volatile.Read(ref _lastSampleTimestamp) < sampleInterval)
+                if (!_cadence.ShouldSample(timestamp))
                 {
                     frame.Dispose();
+                    MarkCaptureAttemptComplete();
                     continue;
                 }
 
-                Volatile.Write(ref _lastSampleTimestamp, timestamp);
-                Interlocked.Exchange(ref _pendingFrame, new(frame, timestamp, DateTimeOffset.UtcNow))?.Frame.Dispose();
+                var sampleSequence = Interlocked.Increment(ref _sampledFrames);
+                var displaced = Interlocked.Exchange(ref _pendingFrame,
+                    new(frame, timestamp, DateTimeOffset.UtcNow, sampleSequence));
+                if (displaced is not null)
+                {
+                    Interlocked.Increment(ref _droppedBeforeEncodeFrames);
+                    displaced.Frame.Dispose();
+                    MarkSampleResolved(displaced.SampleSequence);
+                }
+                MarkCaptureAttemptComplete();
             }
         }
         catch (OperationCanceledException)
@@ -93,6 +113,7 @@ public sealed class CaptureSession : IAsyncDisposable
                     var encoded = new JpegFrame(pending.Timestamp, bytes, pending.Frame.Width, pending.Frame.Height, pending.CapturedAtUtc);
                     Buffer.Add(encoded);
                     Interlocked.Increment(ref _encodedFrames);
+                    MarkSampleResolved(pending.SampleSequence);
                     FrameEncoded?.Invoke(this, encoded);
                 }
             }
@@ -115,6 +136,58 @@ public sealed class CaptureSession : IAsyncDisposable
         }
     }
 
+    public async Task<bool> WaitForEncodedThroughAsync(
+        DateTimeOffset capturedAtUtc,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        var targetUtcTicks = capturedAtUtc.UtcDateTime.Ticks;
+        long? requiredSampledFrames = null;
+        var timer = Stopwatch.StartNew();
+        while (timer.Elapsed < timeout && !_shutdown.IsCancellationRequested)
+        {
+            if (HasResolvedCaptureThrough(targetUtcTicks, ref requiredSampledFrames)) return true;
+            await Task.Delay(5, cancellationToken);
+        }
+        return HasResolvedCaptureThrough(targetUtcTicks, ref requiredSampledFrames);
+    }
+
+    private bool HasResolvedCaptureThrough(long targetUtcTicks, ref long? requiredSampledFrames)
+    {
+        lock (_resolvedSamplesGate)
+        {
+            if (_captureAttemptedThroughUtcTicks < targetUtcTicks) return false;
+            requiredSampledFrames ??= _sampledThroughCaptureAttempt;
+            return _resolvedThroughSample >= requiredSampledFrames.Value;
+        }
+    }
+
+    private void MarkSampleResolved(long sampleSequence)
+    {
+        lock (_resolvedSamplesGate)
+        {
+            if (sampleSequence <= _resolvedThroughSample) return;
+            if (sampleSequence != _resolvedThroughSample + 1)
+            {
+                _resolvedSamplesOutOfOrder.Add(sampleSequence);
+                return;
+            }
+
+            _resolvedThroughSample = sampleSequence;
+            while (_resolvedSamplesOutOfOrder.Remove(_resolvedThroughSample + 1))
+                _resolvedThroughSample++;
+        }
+    }
+
+    private void MarkCaptureAttemptComplete()
+    {
+        lock (_resolvedSamplesGate)
+        {
+            _captureAttemptedThroughUtcTicks = DateTimeOffset.UtcNow.UtcDateTime.Ticks;
+            _sampledThroughCaptureAttempt = SampledFrames;
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         _shutdown.Cancel();
@@ -131,5 +204,5 @@ public sealed class CaptureSession : IAsyncDisposable
         _shutdown.Dispose();
     }
 
-    private sealed record EncodeFrame(Mat Frame, long Timestamp, DateTimeOffset CapturedAtUtc);
+    private sealed record EncodeFrame(Mat Frame, long Timestamp, DateTimeOffset CapturedAtUtc, long SampleSequence);
 }

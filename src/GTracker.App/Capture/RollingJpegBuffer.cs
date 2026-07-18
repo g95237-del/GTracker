@@ -86,11 +86,24 @@ public sealed class RollingJpegBuffer
     public long? LatestTimestamp { get { lock (_gate) return _frames.Count == 0 ? null : _frames.Last().Timestamp; } }
     public DateTimeOffset? EarliestCapturedAtUtc { get { lock (_gate) return GetCapturedAtUtc(_frames.FirstOrDefault()); } }
     public DateTimeOffset? LatestCapturedAtUtc { get { lock (_gate) return GetCapturedAtUtc(_frames.LastOrDefault()); } }
+    public TimeSpan BufferedDuration
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _frames.Count < 2
+                    ? TimeSpan.Zero
+                    : TimeSpan.FromSeconds((_frames.Last().Timestamp - _frames.First().Timestamp) / (double)Stopwatch.Frequency);
+            }
+        }
+    }
 
     public void Add(JpegFrame frame)
     {
         lock (_gate)
         {
+            if (frame.Data.LongLength > _maximumBytes) return;
             _frames.Enqueue(frame);
             _bytes += frame.Data.LongLength;
             while (_frames.Count > 1 &&

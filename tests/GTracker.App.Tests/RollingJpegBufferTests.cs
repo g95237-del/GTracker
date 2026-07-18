@@ -32,6 +32,27 @@ public sealed class RollingJpegBufferTests
     }
 
     [Fact]
+    public void Add_RejectsSingleFrameLargerThanEncodedByteLimit()
+    {
+        var buffer = new RollingJpegBuffer(TimeSpan.FromMinutes(1), 16 * 1024 * 1024);
+
+        buffer.Add(new JpegFrame(0, new byte[17 * 1024 * 1024], 1, 1));
+
+        Assert.Equal(0, buffer.Count);
+        Assert.Equal(0, buffer.Bytes);
+    }
+
+    [Fact]
+    public void BufferedDuration_ReportsRetainedMonotonicRange()
+    {
+        var buffer = new RollingJpegBuffer(TimeSpan.FromSeconds(10), 64 * 1024 * 1024);
+        buffer.Add(Frame(4.25, 1));
+        buffer.Add(Frame(6.75, 2));
+
+        Assert.Equal(TimeSpan.FromSeconds(2.5), buffer.BufferedDuration);
+    }
+
+    [Fact]
     public void Snapshot_UsesMonotonicRelativeOffsets()
     {
         var buffer = new RollingJpegBuffer(TimeSpan.FromSeconds(10), 64 * 1024 * 1024);

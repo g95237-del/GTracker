@@ -29,20 +29,30 @@ public partial class MainWindow : Window
     private const int CaptureHotkeyId = 0x4544;
     private const int StopHotkeyId = 0x4545;
     private const int MaximumFollowedTelemetryEntries = 1000;
+    private const string MonoBepInExPackage = "BepInEx-Unity.Mono-win-x64-6.0.0-be.785+6abdba4.zip";
+    private const string MonoBepInExSha256 = "DB430F14D6661EB38BA96FCC13C07A163E87E553710821D87E5129F915A1B26B";
+    private const string Il2CppBepInExPackage = "BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.785+6abdba4.zip";
+    private const string Il2CppBepInExSha256 = "2A7CBF74D26ABE4765C3E662DB1721B923BAC39849EBFEF2CA5DC7DE7E2D9B7F";
     private readonly ProjectStore _projectStore = new();
     private readonly ClipArchive _clipArchive = new();
+    private readonly RecentProjectStore _recentProjectStore = new();
     private readonly EdiValidator _validator = new();
     private readonly EdiExporter _exporter = new();
     private readonly EdiApiClient _ediApi = new();
     private readonly UnityGameInspector _gameInspector = new();
     private readonly UnityModScaffolder _modScaffolder = new();
     private readonly UnityModDeployer _modDeployer = new();
+    private readonly UnityRuntimeProvisioner _runtimeProvisioner = new();
     private readonly ObservableCollection<UnityTelemetryEntry> _telemetryEntries = [];
+    private readonly ObservableCollection<RecentProjectItem> _recentProjectItems = [];
     private readonly DispatcherTimer _clipTimer;
     private readonly DispatcherTimer _telemetryTimer;
     private readonly Stopwatch _clipPlaybackClock = new();
     private readonly Stopwatch _captureRateClock = Stopwatch.StartNew();
     private readonly SemaphoreSlim _projectOperationGate = new(1, 1);
+    private readonly SemaphoreSlim _projectSwitchGate = new(1, 1);
+    private readonly SemaphoreSlim _captureLifecycleGate = new(1, 1);
+    private readonly SemaphoreSlim _unityOperationGate = new(1, 1);
     private readonly Dictionary<EdiAxis, List<FunscriptPoint>> _workingTracks = [];
     private readonly HashSet<string> _suppressedTelemetryKinds = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _suppressedTelemetryStreams = new(StringComparer.OrdinalIgnoreCase);
@@ -52,6 +62,8 @@ public partial class MainWindow : Window
     private CapturedClip? _workingClip;
     private UnityInspectionResult? _inspection;
     private CancellationTokenSource? _actionLoadCancellation;
+    private CancellationTokenSource? _captureActionCancellation;
+    private CancellationTokenSource? _unitySetupCancellation;
     private JpegFrame? _latestPreviewFrame;
     private EdiAxis _selectedAxis = EdiAxis.Default;
     private Guid? _editingActionId;
@@ -67,6 +79,7 @@ public partial class MainWindow : Window
     private int _previewUpdatePending;
     private int _captureActionRunning;
     private int _captureStartRunning;
+    private int _projectTransitionRunning;
     private long _lastCapturedFrames;
     private long _lastEncodedFrames;
     private bool _reviewMode;
@@ -74,6 +87,7 @@ public partial class MainWindow : Window
     private bool _closing;
     private bool _telemetryOutputPaused;
     private bool _telemetryFollowTail = true;
+    private bool _updatingRecentProjects;
     private int _projectGeneration;
     private int _telemetryLineCount;
     private string _watchedTelemetryPath = string.Empty;
@@ -86,10 +100,14 @@ public partial class MainWindow : Window
         ActionTypeCombo.ItemsSource = Enum.GetValues<EdiGalleryType>();
         AxisCombo.ItemsSource = Enum.GetValues<EdiAxis>();
         ModPresetCombo.ItemsSource = Enum.GetValues<UnityModPresetKind>();
+        CaptureFpsCombo.ItemsSource = new[] { 20, 30 };
         UnityTelemetryList.ItemsSource = _telemetryEntries;
+        RecentProjectsCombo.ItemsSource = _recentProjectItems;
         ActionTypeCombo.SelectedItem = EdiGalleryType.Gallery;
         AxisCombo.SelectedItem = EdiAxis.Default;
         ModPresetCombo.SelectedItem = UnityModPresetKind.Discovery;
+        CaptureFpsCombo.SelectedItem = 30;
+        UpdateRecentProjectItems([]);
         Timeline.PointsChanged += (_, _) => UpdatePointCount();
         Timeline.CursorChanged += (_, milliseconds) => SeekCursor(milliseconds);
         _clipTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(30), DispatcherPriority.Render,
@@ -100,11 +118,22 @@ public partial class MainWindow : Window
         UpdateTriggerMappingStatus();
     }
 
-    private void Window_Loaded(object sender, RoutedEventArgs e)
+    private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
         RefreshWindows();
         RegisterGlobalHotkeys();
         ResetActionEditor();
+        try
+        {
+            await RestoreMostRecentProjectAsync();
+        }
+        catch (OperationCanceledException) when (_closing)
+        {
+        }
+        catch (Exception exception)
+        {
+            SetStatus($"Recent projects could not be restored: {exception.Message}", true);
+        }
     }
 
     private async void NewProject_Click(object sender, RoutedEventArgs e)
@@ -112,7 +141,7 @@ public partial class MainWindow : Window
         var dialog = new OpenFolderDialog { Title = "Choose the parent folder for the new EDI integration project" };
         if (dialog.ShowDialog(this) != true) return;
 
-        var name = string.IsNullOrWhiteSpace(ProjectNameText.Text) ? "Untitled Integration" : ProjectNameText.Text.Trim();
+        var name = string.IsNullOrWhiteSpace(ProjectNameText.Text) ? "Studio Integration" : ProjectNameText.Text.Trim();
         var directory = Path.Combine(dialog.FolderName, SafeDirectoryName(name));
         if (File.Exists(Path.Combine(directory, ProjectStore.ProjectFileName)))
         {
@@ -120,32 +149,144 @@ public partial class MainWindow : Window
             return;
         }
 
-        await BeginProjectTransitionAsync();
-        _project = new StudioProject { Name = name };
-        _projectDirectory = directory;
-        Directory.CreateDirectory(Path.Combine(directory, "clips"));
-        await _projectStore.SaveAsync(directory, _project);
-        ApplyProjectToUi();
-        SetStatus($"Created project '{name}'.");
+        await _projectSwitchGate.WaitAsync();
+        try
+        {
+            var projectDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+            var project = new StudioProject { Name = name };
+            Directory.CreateDirectory(Path.Combine(projectDirectory, "clips"));
+            await _projectStore.SaveAsync(projectDirectory, project);
+            await ActivateProjectAsync(project, projectDirectory);
+            await RememberRecentProjectAsync(projectDirectory);
+            SetStatus($"Created project '{name}'.");
+        }
+        catch (Exception exception)
+        {
+            SetStatus($"Could not create project: {exception.Message}", true);
+        }
+        finally
+        {
+            _projectSwitchGate.Release();
+        }
     }
 
     private async void OpenProject_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFolderDialog { Title = $"Choose a folder containing {ProjectStore.ProjectFileName}" };
         if (dialog.ShowDialog(this) != true) return;
+        await OpenProjectDirectoryAsync(dialog.FolderName, removeInvalidRecentEntry: false);
+    }
+
+    private async void RecentProjectsCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_updatingRecentProjects || RecentProjectsCombo.SelectedItem is not RecentProjectItem item ||
+            string.IsNullOrWhiteSpace(item.Directory)) return;
+        _updatingRecentProjects = true;
+        RecentProjectsCombo.SelectedIndex = 0;
+        _updatingRecentProjects = false;
+        await OpenProjectDirectoryAsync(item.Directory, removeInvalidRecentEntry: true);
+    }
+
+    private async Task<bool> OpenProjectDirectoryAsync(string directory, bool removeInvalidRecentEntry)
+    {
+        await _projectSwitchGate.WaitAsync();
         try
         {
-            var loadedProject = await _projectStore.LoadAsync(dialog.FolderName);
-            await BeginProjectTransitionAsync();
-            _project = loadedProject;
-            _projectDirectory = dialog.FolderName;
-            ApplyProjectToUi();
+            var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+            var loadedProject = await _projectStore.LoadAsync(normalized);
+            if (_closing) return false;
+            await ActivateProjectAsync(loadedProject, normalized);
+            await RememberRecentProjectAsync(normalized);
             SetStatus($"Opened '{_project.Name}' with {_project.Actions.Count} authored scene(s).");
+            return true;
         }
         catch (Exception exception)
         {
+            if (removeInvalidRecentEntry) await ForgetRecentProjectAsync(directory);
             SetStatus($"Could not open project: {exception.Message}", true);
+            return false;
         }
+        finally
+        {
+            _projectSwitchGate.Release();
+        }
+    }
+
+    private async Task RestoreMostRecentProjectAsync()
+    {
+        var paths = await _recentProjectStore.LoadAsync();
+        var validProjects = new List<(string Directory, StudioProject Project)>();
+        foreach (var path in paths)
+        {
+            if (_closing) return;
+            try
+            {
+                if (!File.Exists(Path.Combine(path, ProjectStore.ProjectFileName))) continue;
+                validProjects.Add((path, await _projectStore.LoadAsync(path)));
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
+            {
+            }
+        }
+
+        await _projectSwitchGate.WaitAsync();
+        try
+        {
+            if (_projectDirectory is not null || _closing)
+            {
+                UpdateRecentProjectItems(await _recentProjectStore.LoadAsync());
+                return;
+            }
+            var validPaths = validProjects.Select(item => item.Directory).ToArray();
+            try { await _recentProjectStore.SaveAsync(validPaths); } catch (Exception) { }
+            UpdateRecentProjectItems(validPaths);
+            if (validProjects.Count == 0) return;
+            await ActivateProjectAsync(validProjects[0].Project, validProjects[0].Directory);
+            SetStatus($"Opened most recent project '{_project.Name}'.");
+        }
+        finally
+        {
+            _projectSwitchGate.Release();
+        }
+    }
+
+    private async Task RememberRecentProjectAsync(string directory)
+    {
+        try
+        {
+            await _recentProjectStore.RememberAsync(directory);
+            UpdateRecentProjectItems(await _recentProjectStore.LoadAsync());
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+        }
+    }
+
+    private async Task ForgetRecentProjectAsync(string directory)
+    {
+        try
+        {
+            await _recentProjectStore.RemoveAsync(directory);
+            UpdateRecentProjectItems(await _recentProjectStore.LoadAsync());
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+        }
+    }
+
+    private void UpdateRecentProjectItems(IEnumerable<string> paths)
+    {
+        _updatingRecentProjects = true;
+        _recentProjectItems.Clear();
+        _recentProjectItems.Add(new("Recent projects...", string.Empty));
+        foreach (var path in paths)
+        {
+            var name = Path.GetFileName(path);
+            _recentProjectItems.Add(new($"{(string.IsNullOrWhiteSpace(name) ? path : name)}  |  {path}", path));
+        }
+        RecentProjectsCombo.SelectedIndex = 0;
+        RecentProjectsCombo.IsEnabled = _recentProjectItems.Count > 1;
+        _updatingRecentProjects = false;
     }
 
     private async void SaveProject_Click(object sender, RoutedEventArgs e)
@@ -155,6 +296,8 @@ public partial class MainWindow : Window
 
     private async Task<bool> SaveProjectAsync()
     {
+        var projectGeneration = Volatile.Read(ref _projectGeneration);
+        if (Volatile.Read(ref _projectTransitionRunning) != 0) return false;
         if (_projectDirectory is null)
         {
             SetStatus("Create or open a project first.", true);
@@ -166,14 +309,9 @@ public partial class MainWindow : Window
         {
             await _projectOperationGate.WaitAsync();
             lockTaken = true;
-            SyncSimulatorLayout();
-            _project.Name = string.IsNullOrWhiteSpace(ProjectNameText.Text) ? _project.Name : ProjectNameText.Text.Trim();
-            _project.Game.ExecutablePath = GameExecutableText.Text.Trim();
-            if (ModPresetCombo.SelectedItem is UnityModPresetKind preset) _project.Game.ModPreset = preset;
-            await _projectStore.SaveAsync(_projectDirectory, _project);
-            ProjectPathText.Text = _projectDirectory;
-            SetStatus("Project saved.");
-            return true;
+            if (projectGeneration != Volatile.Read(ref _projectGeneration) ||
+                Volatile.Read(ref _projectTransitionRunning) != 0) return false;
+            return await SaveProjectWhileLockedAsync();
         }
         catch (Exception exception)
         {
@@ -186,31 +324,55 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task BeginProjectTransitionAsync()
+    private async Task<bool> SaveProjectWhileLockedAsync()
     {
-        Interlocked.Increment(ref _projectGeneration);
-        _actionLoadCancellation?.Cancel();
-        _actionLoadCancellation?.Dispose();
-        _actionLoadCancellation = null;
+        if (_projectDirectory is null) return false;
+        SyncSimulatorLayout();
+        _project.Name = string.IsNullOrWhiteSpace(ProjectNameText.Text) ? _project.Name : ProjectNameText.Text.Trim();
+        _project.Game.ExecutablePath = GameExecutableText.Text.Trim();
+        if (ModPresetCombo.SelectedItem is UnityModPresetKind preset) _project.Game.ModPreset = preset;
+        await _projectStore.SaveAsync(_projectDirectory, _project);
+        ProjectPathText.Text = _projectDirectory;
+        SetStatus("Project saved.");
+        return true;
+    }
+
+    private async Task ActivateProjectAsync(StudioProject project, string projectDirectory)
+    {
         await _projectOperationGate.WaitAsync();
-        _projectOperationGate.Release();
-        await StopCaptureAsync();
-        _clipTimer.Stop();
-        StopTelemetryWatch(clearOutput: true);
-        _clipPlaybackClock.Reset();
-        _workingClip = null;
-        _workingClipStartedAtUtc = null;
-        _workingClipEndedAtUtc = null;
-        _correlatedUnityScene = string.Empty;
-        _correlatedUnityAnimation = string.Empty;
-        _correlatedAnimationCandidates = [];
-        _pendingCapturedTriggerMapping = null;
-        _inspection = null;
-        _editingActionId = null;
-        _reviewMode = false;
-        _latestPreviewFrame = null;
-        PreviewImage.Source = null;
-        PreviewModeText.Text = "LIVE PREVIEW";
+        Interlocked.Exchange(ref _projectTransitionRunning, 1);
+        try
+        {
+            Interlocked.Increment(ref _projectGeneration);
+            _actionLoadCancellation?.Cancel();
+            _actionLoadCancellation?.Dispose();
+            _actionLoadCancellation = null;
+            await StopCaptureAsync();
+            _clipTimer.Stop();
+            StopTelemetryWatch(clearOutput: true);
+            _clipPlaybackClock.Reset();
+            _workingClip = null;
+            _workingClipStartedAtUtc = null;
+            _workingClipEndedAtUtc = null;
+            _correlatedUnityScene = string.Empty;
+            _correlatedUnityAnimation = string.Empty;
+            _correlatedAnimationCandidates = [];
+            _pendingCapturedTriggerMapping = null;
+            _inspection = null;
+            _editingActionId = null;
+            _reviewMode = false;
+            _latestPreviewFrame = null;
+            PreviewImage.Source = null;
+            PreviewModeText.Text = "LIVE PREVIEW";
+            _project = project;
+            _projectDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(projectDirectory));
+            ApplyProjectToUi();
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _projectTransitionRunning, 0);
+            _projectOperationGate.Release();
+        }
     }
 
     private void ApplyProjectToUi()
@@ -295,18 +457,24 @@ public partial class MainWindow : Window
 
     private async Task<bool> StartCaptureForWindowAsync(WindowInfo window, bool activateWindow)
     {
+        if (_closing || Volatile.Read(ref _projectTransitionRunning) != 0) return false;
         if (Interlocked.Exchange(ref _captureStartRunning, 1) != 0) return false;
+        await _captureLifecycleGate.WaitAsync();
         try
         {
-            await StopCaptureAsync();
+            if (_closing || Volatile.Read(ref _projectTransitionRunning) != 0) return false;
+            _captureActionCancellation?.Cancel();
+            await StopCaptureCoreAsync();
             StartCaptureButton.IsEnabled = false;
             var retentionSeconds = Math.Max(120, ParseSeconds(PreRollText.Text, 12, 1, 300) + ParseSeconds(PostRollText.Text, 3, 0, 60) + 15);
-            var session = new CaptureSession(window.Handle, TimeSpan.FromSeconds(retentionSeconds));
+            var recordingFps = CaptureFpsCombo.SelectedItem is int selectedFps ? selectedFps : 30;
+            var session = new CaptureSession(window.Handle, TimeSpan.FromSeconds(retentionSeconds), recordingFps);
             session.FrameEncoded += CaptureSession_FrameEncoded;
             session.Faulted += CaptureSession_Faulted;
             _captureSession = session;
             session.Start();
             StartCaptureButton.IsEnabled = false;
+            CaptureFpsCombo.IsEnabled = false;
             _lastCapturedFrames = 0;
             _lastEncodedFrames = 0;
             _captureRateClock.Restart();
@@ -319,18 +487,21 @@ public partial class MainWindow : Window
         }
         catch (Exception exception)
         {
-            await StopCaptureAsync();
+            _captureActionCancellation?.Cancel();
+            await StopCaptureCoreAsync();
             SetStatus($"Capture failed: {exception.Message}", true);
             return false;
         }
         finally
         {
+            _captureLifecycleGate.Release();
             Interlocked.Exchange(ref _captureStartRunning, 0);
         }
     }
 
     private async Task StartOrCaptureFromHotkeyAsync()
     {
+        if (_closing || Volatile.Read(ref _projectTransitionRunning) != 0) return;
         if (_captureSession is not null)
         {
             await CaptureActionAsync();
@@ -400,12 +571,28 @@ public partial class MainWindow : Window
         _lastCapturedFrames = captured;
         _lastEncodedFrames = encoded;
         _captureRateClock.Restart();
-        CaptureStatsText.Text = $"DXGI {captureFps,5:F1} FPS  |  buffer {recordFps,4:F1} FPS  |  {session.Buffer.Count} frames  |  {session.Buffer.Bytes / 1048576d:F1} MiB";
+        CaptureStatsText.Text = $"DXGI {captureFps,5:F1} FPS  |  buffer {recordFps,4:F1}/{session.RecordingFps} FPS" +
+                                $"  |  dropped {session.DroppedBeforeEncodeFrames}  |  retained {session.Buffer.BufferedDuration.TotalSeconds:F1}s" +
+                                $"  |  {session.Buffer.Bytes / 1048576d:F1} MiB";
     }
 
     private async void StopCapture_Click(object sender, RoutedEventArgs e) => await StopCaptureAsync();
 
     private async Task StopCaptureAsync()
+    {
+        _captureActionCancellation?.Cancel();
+        await _captureLifecycleGate.WaitAsync();
+        try
+        {
+            await StopCaptureCoreAsync();
+        }
+        finally
+        {
+            _captureLifecycleGate.Release();
+        }
+    }
+
+    private async Task StopCaptureCoreAsync()
     {
         var session = Interlocked.Exchange(ref _captureSession, null);
         if (session is not null)
@@ -415,6 +602,7 @@ public partial class MainWindow : Window
             await session.DisposeAsync();
         }
         StartCaptureButton.IsEnabled = true;
+        CaptureFpsCombo.IsEnabled = true;
         CaptureStatsText.Text = "Capture stopped";
     }
 
@@ -430,6 +618,8 @@ public partial class MainWindow : Window
         }
         if (Interlocked.Exchange(ref _captureActionRunning, 1) != 0) return;
 
+        using var cancellation = new CancellationTokenSource();
+        Interlocked.Exchange(ref _captureActionCancellation, cancellation)?.Cancel();
         CaptureActionButton.IsEnabled = false;
         CaptureTelemetryCycleButton.IsEnabled = false;
         var projectGeneration = Volatile.Read(ref _projectGeneration);
@@ -446,14 +636,25 @@ public partial class MainWindow : Window
             }
 
             SetStatus($"Scene marked. Collecting {postRoll:F1} seconds of post-roll...");
-            if (postRoll > 0) await Task.Delay(TimeSpan.FromSeconds(postRoll));
+            if (postRoll > 0) await Task.Delay(TimeSpan.FromSeconds(postRoll), cancellation.Token);
             if (!ReferenceEquals(session, _captureSession) || projectGeneration != Volatile.Read(ref _projectGeneration))
             {
                 SetStatus("Capture session ended before the scene clip was complete.", true);
                 return;
             }
 
-            var endUtc = DateTimeOffset.UtcNow;
+            var endUtc = markerUtc.AddSeconds(postRoll);
+            if (postRoll > 0 && !await session.WaitForEncodedThroughAsync(
+                    endUtc, TimeSpan.FromSeconds(1), cancellation.Token))
+            {
+                SetStatus("Capture encoder did not reach the end of the event. No scene was created.", true);
+                return;
+            }
+            if (!ReferenceEquals(session, _captureSession) || projectGeneration != Volatile.Read(ref _projectGeneration))
+            {
+                SetStatus("Capture session ended before the scene clip was complete.", true);
+                return;
+            }
             var clip = session.Buffer.Snapshot(markerUtc - TimeSpan.FromSeconds(preRoll), endUtc);
             if (clip.Frames.Count == 0 || clip.DurationMilliseconds <= 0)
             {
@@ -466,10 +667,18 @@ public partial class MainWindow : Window
                 clip.StartedAtUtc, clip.EndedAtUtc, autoApplyRuntimeName: true);
             SetStatus($"Captured {clip.DurationMilliseconds / 1000d:F2} seconds ({clip.Frames.Count} frames). Scrub, trim, and draw the script below.");
         }
+        catch (OperationCanceledException)
+        {
+            if (!_closing && Volatile.Read(ref _projectTransitionRunning) == 0) SetStatus("Scene capture cancelled.");
+        }
         finally
         {
-            CaptureActionButton.IsEnabled = true;
-            CaptureTelemetryCycleButton.IsEnabled = true;
+            Interlocked.CompareExchange(ref _captureActionCancellation, null, cancellation);
+            if (!_closing)
+            {
+                CaptureActionButton.IsEnabled = true;
+                CaptureTelemetryCycleButton.IsEnabled = true;
+            }
             Interlocked.Exchange(ref _captureActionRunning, 0);
         }
     }
@@ -1223,6 +1432,8 @@ public partial class MainWindow : Window
 
     private async void DeleteAction_Click(object sender, RoutedEventArgs e)
     {
+        var projectGeneration = Volatile.Read(ref _projectGeneration);
+        if (Volatile.Read(ref _projectTransitionRunning) != 0) return;
         if (ActionList.SelectedItem is not AuthoredAction action || _projectDirectory is null) return;
         if (action.IsLocked)
         {
@@ -1234,6 +1445,8 @@ public partial class MainWindow : Window
         await _projectOperationGate.WaitAsync();
         try
         {
+            if (projectGeneration != Volatile.Read(ref _projectGeneration) ||
+                Volatile.Read(ref _projectTransitionRunning) != 0) return;
             var candidate = CloneProject(
                 _project.Actions.Where(item => item.Id != action.Id),
                 _project.Bundles.Select(bundle => new BundleDefinition
@@ -1336,6 +1549,8 @@ public partial class MainWindow : Window
 
     private async Task SaveActionAsync(bool lockAfterSave)
     {
+        var projectGeneration = Volatile.Read(ref _projectGeneration);
+        if (Volatile.Read(ref _projectTransitionRunning) != 0) return;
         if (_projectDirectory is null)
         {
             SetStatus("Create or open a project before saving a scene.", true);
@@ -1359,6 +1574,8 @@ public partial class MainWindow : Window
         {
             await _projectOperationGate.WaitAsync();
             lockTaken = true;
+            if (projectGeneration != Volatile.Read(ref _projectGeneration) ||
+                Volatile.Read(ref _projectTransitionRunning) != 0) return;
             var existing = _editingActionId is { } id ? _project.Actions.FirstOrDefault(item => item.Id == id) : null;
             var action = new AuthoredAction
             {
@@ -1441,12 +1658,16 @@ public partial class MainWindow : Window
 
     private async Task SetSceneLockAsync(AuthoredAction action, bool isLocked)
     {
+        var projectGeneration = Volatile.Read(ref _projectGeneration);
+        if (Volatile.Read(ref _projectTransitionRunning) != 0) return;
         if (_projectDirectory is null) return;
         var lockTaken = false;
         try
         {
             await _projectOperationGate.WaitAsync();
             lockTaken = true;
+            if (projectGeneration != Volatile.Read(ref _projectGeneration) ||
+                Volatile.Read(ref _projectTransitionRunning) != 0) return;
             var updated = CloneAction(action);
             updated.IsLocked = isLocked;
             var candidate = CloneProjectWith(updated);
@@ -1810,11 +2031,179 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void GenerateMod_Click(object sender, RoutedEventArgs e)
+    private async void InstallBepInEx_Click(object sender, RoutedEventArgs e)
     {
+        UnityInspectionResult inspection;
         try
         {
-            var inspection = _gameInspector.Inspect(GameExecutableText.Text);
+            inspection = _gameInspector.Inspect(GameExecutableText.Text);
+            ApplyUnityInspection(inspection);
+            if (!inspection.IsUnity)
+            {
+                SetStatus("A supported Unity Mono or IL2CPP runtime was not detected.", true);
+                return;
+            }
+            if (!inspection.Architecture.Equals("Amd64", StringComparison.OrdinalIgnoreCase))
+            {
+                SetStatus($"The packaged BepInEx builds are x64, but this game is {inspection.Architecture}.", true);
+                return;
+            }
+        }
+        catch (Exception exception)
+        {
+            SetStatus($"Game analysis failed: {exception.Message}", true);
+            return;
+        }
+
+        var package = ResolveBepInExPackage(inspection.Runtime);
+        if (!File.Exists(package.Path))
+        {
+            SetStatus($"Packaged BepInEx archive is missing: {package.Path}", true);
+            return;
+        }
+        var gameRoot = Path.GetDirectoryName(inspection.ExecutablePath)!;
+        var staleScaffoldWarning = Directory.Exists(_project.Game.ModProjectPath) && inspection.BepInEx == BepInExFlavor.Missing
+            ? $"{Environment.NewLine}{Environment.NewLine}A mod project was generated before BepInEx was installed. Generate a fresh scaffold afterward so Plugin.cs targets the detected loader."
+            : string.Empty;
+        var confirmation = MessageBox.Show(this,
+            $"Install the recommended BepInEx 6 x64 {inspection.Runtime} nightly into:{Environment.NewLine}{gameRoot}" +
+            $"{Environment.NewLine}{Environment.NewLine}Files supplied by the package will be replaced. Existing plugins, config files, and unrelated files are preserved." +
+            $"{Environment.NewLine}{Environment.NewLine}The game will then start automatically. EDI Integration Studio will wait for BepInEx to finish, close the game normally, and force-close it only if needed." +
+            staleScaffoldWarning,
+            "Install BepInEx and initialize", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirmation != MessageBoxResult.Yes) return;
+
+        await _unityOperationGate.WaitAsync();
+        SetUnityToolsBusy(true);
+        using var cancellation = new CancellationTokenSource();
+        _unitySetupCancellation = cancellation;
+        try
+        {
+            SetStatus($"Installing packaged BepInEx {inspection.Runtime} files...");
+            var install = await Task.Run(() => _runtimeProvisioner.InstallBepInEx(
+                inspection, package.Path, package.Sha256, cancellation.Token), cancellation.Token);
+            var installedInspection = _gameInspector.Inspect(inspection.ExecutablePath);
+            ApplyUnityInspection(installedInspection);
+            var progress = new Progress<string>(message =>
+            {
+                UnityStatusText.Text = message;
+                SetStatus(message);
+            });
+            var initialization = await _runtimeProvisioner.InitializeGameAsync(
+                installedInspection, progress, cancellationToken: cancellation.Token);
+            var finalInspection = _gameInspector.Inspect(inspection.ExecutablePath);
+            ApplyUnityInspection(finalInspection);
+            if (_projectDirectory is not null) await SaveProjectAsync();
+
+            var closeMode = initialization.ForcedClose ? "The game required a forced close." : "The game closed normally.";
+            var ready = finalInspection.IsBuildReady
+                ? "The Unity mod toolchain is ready."
+                : "BepInEx initialized, but analysis still reports missing build references.";
+            MessageBox.Show(this,
+                $"Installed {install.InstalledFileCount} BepInEx files ({install.ReplacedFileCount} replaced)." +
+                $"{Environment.NewLine}Initialization time: {initialization.Elapsed:mm\\:ss}. {closeMode}" +
+                $"{Environment.NewLine}{ready}",
+                "BepInEx setup complete", MessageBoxButton.OK,
+                finalInspection.IsBuildReady ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            SetStatus($"BepInEx {inspection.Runtime} setup completed. {ready}", !finalInspection.IsBuildReady);
+        }
+        catch (OperationCanceledException) when (_closing)
+        {
+        }
+        catch (OperationCanceledException)
+        {
+            SetStatus("BepInEx setup was cancelled.", true);
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, exception.Message, "BepInEx setup failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            SetStatus($"BepInEx setup failed: {exception.Message}", true);
+        }
+        finally
+        {
+            if (ReferenceEquals(_unitySetupCancellation, cancellation)) _unitySetupCancellation = null;
+            SetUnityToolsBusy(false);
+            _unityOperationGate.Release();
+        }
+    }
+
+    private async void InstallEdi_Click(object sender, RoutedEventArgs e)
+    {
+        UnityInspectionResult inspection;
+        try
+        {
+            inspection = _gameInspector.Inspect(GameExecutableText.Text);
+            ApplyUnityInspection(inspection);
+            if (!inspection.IsUnity)
+            {
+                SetStatus("Select and analyze a supported Unity game before installing EDI.", true);
+                return;
+            }
+        }
+        catch (Exception exception)
+        {
+            SetStatus($"Game analysis failed: {exception.Message}", true);
+            return;
+        }
+
+        var dialog = new OpenFolderDialog { Title = "Choose the fresh EDI folder containing Edi.exe" };
+        if (dialog.ShowDialog(this) != true) return;
+        var sourceDirectory = dialog.FolderName;
+        var gameRoot = Path.GetDirectoryName(inspection.ExecutablePath)!;
+        var confirmation = MessageBox.Show(this,
+            $"Copy EDI from:{Environment.NewLine}{sourceDirectory}{Environment.NewLine}{Environment.NewLine}Into the game folder:{Environment.NewLine}{gameRoot}" +
+            $"{Environment.NewLine}{Environment.NewLine}Existing destination files with the same names will be replaced. The source Gallery contents will not be copied, and the destination Gallery will not be changed.",
+            "Install EDI", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirmation != MessageBoxResult.Yes) return;
+
+        await _unityOperationGate.WaitAsync();
+        SetUnityToolsBusy(true);
+        using var cancellation = new CancellationTokenSource();
+        _unitySetupCancellation = cancellation;
+        try
+        {
+            SetStatus("Installing EDI files while preserving Gallery contents...");
+            var result = await Task.Run(() => _runtimeProvisioner.InstallEdi(
+                inspection, sourceDirectory, cancellation.Token), cancellation.Token);
+            MessageBox.Show(this,
+                $"Installed {result.InstalledFileCount} EDI files ({result.ReplacedFileCount} replaced)." +
+                $"{Environment.NewLine}Gallery preserved at:{Environment.NewLine}{result.GalleryPath}",
+                "EDI installation complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            SetStatus($"Installed EDI into the game folder. Gallery contents were preserved.");
+        }
+        catch (OperationCanceledException) when (_closing)
+        {
+        }
+        catch (OperationCanceledException)
+        {
+            SetStatus("EDI installation was cancelled.", true);
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, exception.Message, "EDI installation failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            SetStatus($"EDI installation failed: {exception.Message}", true);
+        }
+        finally
+        {
+            if (ReferenceEquals(_unitySetupCancellation, cancellation)) _unitySetupCancellation = null;
+            SetUnityToolsBusy(false);
+            _unityOperationGate.Release();
+        }
+    }
+
+    private async void GenerateMod_Click(object sender, RoutedEventArgs e)
+    {
+        if (Volatile.Read(ref _projectTransitionRunning) != 0)
+        {
+            SetStatus("Wait for the active project to finish loading before generating a mod.", true);
+            return;
+        }
+
+        var requestedProjectGeneration = Volatile.Read(ref _projectGeneration);
+        UnityInspectionResult inspection;
+        try
+        {
+            inspection = _gameInspector.Inspect(GameExecutableText.Text);
             ApplyUnityInspection(inspection);
             if (!inspection.IsUnity)
             {
@@ -1829,27 +2218,56 @@ public partial class MainWindow : Window
         }
         var dialog = new OpenFolderDialog { Title = "Choose a folder for the generated BepInEx mod source" };
         if (dialog.ShowDialog(this) != true) return;
+        var projectOperationStarted = false;
+        await _unityOperationGate.WaitAsync();
+        await _projectOperationGate.WaitAsync();
         try
         {
+            if (requestedProjectGeneration != Volatile.Read(ref _projectGeneration))
+            {
+                SetStatus("Mod generation was cancelled because the active project changed.", true);
+                return;
+            }
+
+            projectOperationStarted = true;
+            Interlocked.Exchange(ref _projectTransitionRunning, 1);
+            SetUnityToolsBusy(true);
             _project.Name = string.IsNullOrWhiteSpace(ProjectNameText.Text) ? _project.Name : ProjectNameText.Text.Trim();
             var preset = ModPresetCombo.SelectedItem is UnityModPresetKind selectedPreset
                 ? selectedPreset
                 : UnityModPresetKind.Discovery;
-            var result = await _modScaffolder.GenerateAsync(_project, _inspection!, dialog.FolderName, preset, EdiBaseUrlText.Text);
+            var result = await _modScaffolder.GenerateAsync(_project, inspection, dialog.FolderName, preset, EdiBaseUrlText.Text);
             _project.Game.ModPreset = preset;
             _project.Game.ModProjectPath = result.ProjectDirectory;
             _project.Game.TelemetryPath = result.TelemetryFile;
-            if (_projectDirectory is not null) await SaveProjectAsync();
-            SetStatus($"Generated {_inspection!.Runtime} {preset} mod project. Use Build + install when BepInEx is ready.");
+            if (_projectDirectory is not null) await SaveProjectWhileLockedAsync();
+            SetStatus($"Generated {inspection.Runtime} {preset} mod project. Use Build + install when BepInEx is ready.");
         }
         catch (Exception exception)
         {
             SetStatus($"Mod scaffold failed: {exception.Message}", true);
         }
+        finally
+        {
+            if (projectOperationStarted)
+            {
+                Interlocked.Exchange(ref _projectTransitionRunning, 0);
+                SetUnityToolsBusy(false);
+            }
+            _projectOperationGate.Release();
+            _unityOperationGate.Release();
+        }
     }
 
     private async void BuildInstallMod_Click(object sender, RoutedEventArgs e)
     {
+        if (Volatile.Read(ref _projectTransitionRunning) != 0)
+        {
+            SetStatus("Wait for the active project to finish loading before building a mod.", true);
+            return;
+        }
+
+        var requestedProjectGeneration = Volatile.Read(ref _projectGeneration);
         var projectPath = _project.Game.ModProjectPath;
         if (!Directory.Exists(projectPath))
         {
@@ -1858,9 +2276,20 @@ public partial class MainWindow : Window
             projectPath = dialog.FolderName;
         }
 
-        BuildInstallButton.IsEnabled = false;
+        await _unityOperationGate.WaitAsync();
+        await _projectOperationGate.WaitAsync();
+        var projectOperationStarted = false;
         try
         {
+            if (requestedProjectGeneration != Volatile.Read(ref _projectGeneration))
+            {
+                SetStatus("Mod build was cancelled because the active project changed.", true);
+                return;
+            }
+
+            projectOperationStarted = true;
+            Interlocked.Exchange(ref _projectTransitionRunning, 1);
+            SetUnityToolsBusy(true);
             var manifest = await UnityModDeployer.LoadManifestAsync(projectPath);
             var inspection = _gameInspector.Inspect(manifest.GameExecutable);
             ApplyUnityInspection(inspection);
@@ -1894,7 +2323,7 @@ public partial class MainWindow : Window
             _project.Game.ModProjectPath = projectPath;
             _project.Game.TelemetryPath = build.Manifest.TelemetryFile;
             _project.Game.InstalledPluginPath = install.PluginPath;
-            if (_projectDirectory is not null) await SaveProjectAsync();
+            if (_projectDirectory is not null) await SaveProjectWhileLockedAsync();
             SetStatus($"Built and installed {Path.GetFileName(install.PluginPath)}. Launch the game, then Watch discovery.");
         }
         catch (Exception exception)
@@ -1903,7 +2332,13 @@ public partial class MainWindow : Window
         }
         finally
         {
-            BuildInstallButton.IsEnabled = true;
+            if (projectOperationStarted)
+            {
+                Interlocked.Exchange(ref _projectTransitionRunning, 0);
+                SetUnityToolsBusy(false);
+            }
+            _projectOperationGate.Release();
+            _unityOperationGate.Release();
         }
     }
 
@@ -2136,6 +2571,7 @@ public partial class MainWindow : Window
 
     private async void MapTelemetry_Click(object sender, RoutedEventArgs e)
     {
+        if (Volatile.Read(ref _projectTransitionRunning) != 0) return;
         if (UnityTelemetryList.SelectedItem is not UnityTelemetryEntry entry ||
             TelemetryActionCombo.SelectedItem is not AuthoredAction action)
         {
@@ -2157,19 +2593,20 @@ public partial class MainWindow : Window
 
         _project.Game.SetTriggerMapping(kind.Value, entry.Candidate, action.Name);
         UpdateTriggerMappingStatus();
-        if (_projectDirectory is not null) await SaveProjectAsync();
-        SetStatus($"Mapped {kind} '{entry.Candidate}' to '{action.Name}'. Use Build + install to apply it.");
+        if (_projectDirectory is null || await SaveProjectAsync())
+            SetStatus($"Mapped {kind} '{entry.Candidate}' to '{action.Name}'. Use Build + install to apply it.");
     }
 
     private async void ClearTriggerMappings_Click(object sender, RoutedEventArgs e)
     {
+        if (Volatile.Read(ref _projectTransitionRunning) != 0) return;
         if (_project.Game.TriggerMappings.Count == 0) return;
         if (MessageBox.Show(this, "Clear all discovered Unity trigger mappings for this project?", "Clear mappings",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         _project.Game.TriggerMappings.Clear();
         UpdateTriggerMappingStatus();
-        if (_projectDirectory is not null) await SaveProjectAsync();
-        SetStatus("Unity trigger mappings cleared. Use Build + install to apply the change.");
+        if (_projectDirectory is null || await SaveProjectAsync())
+            SetStatus("Unity trigger mappings cleared. Use Build + install to apply the change.");
     }
 
     private void UpdateTriggerMappingStatus()
@@ -2218,6 +2655,32 @@ public partial class MainWindow : Window
             ? $"Unity {inspection.Runtime} / {inspection.Architecture} / {inspection.RecommendedTargetFramework} / {inspection.BepInEx}" +
               (inspection.IsBuildReady ? " / ready" : " / setup required")
             : "Unity runtime not detected";
+    }
+
+    private static BepInExPackage ResolveBepInExPackage(UnityRuntimeKind runtime)
+    {
+        var (fileName, hash) = runtime == UnityRuntimeKind.Il2Cpp
+            ? (Il2CppBepInExPackage, Il2CppBepInExSha256)
+            : (MonoBepInExPackage, MonoBepInExSha256);
+        return new(Path.Combine(AppContext.BaseDirectory, "RuntimePackages", fileName), hash);
+    }
+
+    private void SetUnityToolsBusy(bool busy)
+    {
+        NewProjectButton.IsEnabled = !busy;
+        OpenProjectButton.IsEnabled = !busy;
+        RecentProjectsCombo.IsEnabled = !busy && _recentProjectItems.Count > 1;
+        RefreshWindowsButton.IsEnabled = !busy;
+        WindowCombo.IsEnabled = !busy;
+        GameBrowseButton.IsEnabled = !busy;
+        GameExecutableText.IsEnabled = !busy;
+        ModPresetCombo.IsEnabled = !busy;
+        AnalyzeGameButton.IsEnabled = !busy;
+        InstallBepInExButton.IsEnabled = !busy;
+        InstallEdiButton.IsEnabled = !busy;
+        GenerateModButton.IsEnabled = !busy;
+        BuildInstallButton.IsEnabled = !busy;
+        WatchTelemetryButton.IsEnabled = !busy;
     }
 
     private void TopmostCheck_Changed(object sender, RoutedEventArgs e) => Topmost = TopmostCheck.IsChecked == true;
@@ -2309,11 +2772,16 @@ public partial class MainWindow : Window
         e.Cancel = true;
         _closing = true;
         IsEnabled = false;
+        _unitySetupCancellation?.Cancel();
         _clipTimer.Stop();
         _telemetryTimer.Stop();
         await StopCaptureAsync();
         await _projectOperationGate.WaitAsync();
         _projectOperationGate.Release();
+        await _projectSwitchGate.WaitAsync();
+        _projectSwitchGate.Release();
+        await _unityOperationGate.WaitAsync();
+        _unityOperationGate.Release();
         _ediApi.Dispose();
         if (PresentationSource.FromVisual(this) is HwndSource source)
         {
@@ -2337,6 +2805,12 @@ public partial class MainWindow : Window
         string Candidate,
         string Details,
         string Display)
+    {
+        public override string ToString() => Display;
+    }
+
+    private sealed record BepInExPackage(string Path, string Sha256);
+    private sealed record RecentProjectItem(string Display, string Directory)
     {
         public override string ToString() => Display;
     }

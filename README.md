@@ -7,18 +7,21 @@ The repository and project names remain `GTracker` temporarily; the running appl
 ## Current Vertical Slice
 
 - Selects a visible game window and captures its client area through DXGI Desktop Duplication.
-- Polls capture at 60 Hz and records a memory-bounded JPEG pre-roll at a 20 FPS target.
+- Polls capture at 60 Hz and records a memory-bounded JPEG pre-roll at a selectable 20 or 30 FPS target, defaulting to 30 FPS.
 - Captures configurable pre-roll and post-roll with `Ctrl+Shift+F8` while the game has focus.
 - Reviews, loops, scrubs, marks in/out, and trims a captured scene without leaving the studio.
 - Edits 0–100 funscript curves with an OFS-compatible keyboard subset, single-point mouse dragging, and undo/redo.
 - Animates a movable, rotatable, resizable linear simulator directly over the captured video.
 - Authors all EDI axes as separate scripts: Default, Surge, Sway, Twist, Roll, Pitch, Vibrate, Valve, Suction, and Rotate.
 - Stores versioned projects and compressed `.ediclip` review assets using atomic replacement.
+- Keeps the ten most recently opened project folders per Windows user and automatically restores the newest valid project on startup.
 - Validates names, durations, ranges, duplicate timestamps, loop boundaries, variants, axes, bundles, and export collisions.
 - Exports canonical `Definitions.csv`, legacy Funscript 1.0 integer points, separate axis files, folder variants, and optional `BundleDefinition.txt`.
 - Uses a managed export manifest so re-export removes stale axes and bundles without touching unrelated files.
 - Checks EDI through `GET /Edi/Definitions`, tests selected scenes through `POST /Edi/Play`, and exposes a global `Ctrl+Shift+F12` EDI stop.
 - Detects Unity Mono versus IL2CPP, the managed target framework, modular versus monolithic Unity references, BepInEx flavor, and IL2CPP interop readiness.
+- Installs the packaged recommended BepInEx 6 x64 Mono or IL2CPP build, launches the selected game until first-run initialization completes, and then closes it.
+- Installs a selected fresh EDI instance beside the game while deliberately preserving all destination `Gallery` contents.
 - Generates BepInEx Mono or IL2CPP plugins with scene/Animator discovery, configurable matching presets, scene constants, and an ordered EDI HTTP client.
 - Builds and installs only the final owned plugin DLL, then watches structured runtime discovery telemetry inside the studio.
 - Refuses to regenerate over an existing mod scaffold, protecting hand-written Harmony patches.
@@ -44,7 +47,7 @@ dotnet run --project src\GTracker.App\GTracker.App.csproj --configuration Releas
 
 ## Authoring Workflow
 
-1. Enter a project name, click **New**, and choose a parent folder.
+1. Enter a project name, click **New**, and choose a parent folder, or select an existing entry from **Recent projects**. The newest valid recent project opens automatically at startup.
 2. Select the game window and click **Start rolling capture**.
 3. Play through the game normally. The encoded pre-roll exists only in memory.
 4. When a useful scene occurs, press `Ctrl+Shift+F8`. The studio retains the configured pre-roll and waits for the configured post-roll.
@@ -115,14 +118,13 @@ attack,attack,0,2000,gallery,true,
 
 1. Select the actual game executable rather than a launcher.
 2. Choose **Discovery** as the initial preset and click **Analyze Unity runtime**.
-3. Install and run the matching BepInEx build once if analysis reports that setup is incomplete:
-   - Mono: normally BepInEx 5 with managed assemblies under `<Game>_Data\Managed`.
-   - IL2CPP: BepInEx 6 IL2CPP; allow first-run interop generation to finish.
-4. Click **Generate mod project** and choose an empty folder.
-5. Close the game and click **Build + install**. The studio runs `dotnet build`, verifies the output, and installs only `IntegrationMod.dll` under `BepInEx\plugins\<plugin-guid>`.
-6. Launch the game and click **Watch discovery** to inspect scene names, Animator clip names, state hashes, object paths, and transitions in real time.
-7. Select a discovered scene or Animator clip, select a saved authored scene, and click **Map selected**. Click **Build + install** again to compile that explicit project preset into the plugin; hand-written `Plugin.cs` patches are preserved.
-8. If names already correspond to authored scene names, the convention presets can map them without individual entries. Use a narrow game-specific Harmony patch when public scene/Animator events are not semantically sufficient.
+3. If setup is incomplete, close the game and click **Install BepInEx + initialize**. Confirm the detected runtime package; the studio verifies and installs it, launches the game, waits for BepInEx (and IL2CPP interop generation when applicable), and closes the game.
+4. Optionally click **Install EDI**, select a fresh folder containing `Edi.exe`, and confirm the merge into the game folder. Source `Gallery` files are skipped and an existing destination `Gallery` is left untouched.
+5. Click **Generate mod project** and choose an empty folder.
+6. Close the game and click **Build + install**. The studio runs `dotnet build`, verifies the output, and installs only `IntegrationMod.dll` under `BepInEx\plugins\<plugin-guid>`.
+7. Launch the game and click **Watch discovery** to inspect scene names, Animator clip names, state hashes, object paths, and transitions in real time.
+8. Select a discovered scene or Animator clip, select a saved authored scene, and click **Map selected**. Click **Build + install** again to compile that explicit project preset into the plugin; hand-written `Plugin.cs` patches are preserved.
+9. If names already correspond to authored scene names, the convention presets can map them without individual entries. Use a narrow game-specific Harmony patch when public scene/Animator events are not semantically sufficient.
 
 `Discovery` never triggers EDI automatically unless the project contains an explicit **Map selected** entry. `SceneNames`, `AnimationNames`, and `SceneAndAnimationNames` additionally normalize names to letters and digits and require an exact authored-scene-name match before calling EDI. This avoids substring guesses while still handling names such as `enemy-hit`, `Enemy Hit`, and `enemy_hit` consistently.
 
@@ -143,13 +145,15 @@ Generate a fresh project with the current studio. If preserving an edited old pr
 - Export preserves unrelated Gallery files but refuses any unmanaged file it would replace.
 - Generated mod source refuses to overwrite existing files.
 - Plugin installation refuses to run while the target game is open and refuses to replace a DLL without the studio's ownership manifest.
+- BepInEx installation verifies the packaged archive hash and runtime, blocks while the game is running, rejects unsafe archive paths, and rolls back copied files after a failure.
+- EDI installation rejects nested source/destination paths and reparse points, copies files transactionally, and never copies source `Gallery` contents over the destination gallery.
 - EDI calls default to loopback `http://127.0.0.1:5000/Edi` and use two-second timeouts.
 - Desktop Duplication captures the composed pixels in the window's screen rectangle. Other windows or notifications overlapping the game may appear in the capture.
 
 ## Current Boundaries
 
 - Clip review is a JPEG sequence, not a standard MP4/WebM asset. Audio is not captured yet.
-- The recording target is 20 FPS. DXGI is polled at 60 Hz, but Desktop Duplication only returns newly presented desktop frames.
+- The default recording target is 30 FPS, with a 20 FPS fallback for slower systems. DXGI is polled at 60 Hz, but Desktop Duplication only returns newly presented desktop frames and the bounded encoder may drop stale pending frames under load.
 - The selected game must remain visible and non-minimized. Exclusive fullscreen, HDR/10-bit output, rotated displays, protected content, and monitor changes are rejected or require capture restart.
 - True reverse game-state scrubbing is not generally possible. The studio loops captured review frames; it does not rewind Unity state.
 - Generic runtime discovery cannot recover Animator state names from hashes or determine game semantics; confirmed mappings or game-specific patches remain necessary.

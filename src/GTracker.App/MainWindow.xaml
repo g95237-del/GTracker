@@ -17,18 +17,20 @@
         <Border Grid.Row="0" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1" CornerRadius="6" Padding="8" Margin="0,0,0,8">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="210"/>
-                    <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="270"/>
+                    <ColumnDefinition Width="210"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="PROJECT" Style="{StaticResource SectionHeaderStyle}" VerticalAlignment="Center" Margin="4,0,8,0"/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <Button Content="New" Click="NewProject_Click"/>
-                    <Button Content="Open" Click="OpenProject_Click"/>
+                    <Button x:Name="NewProjectButton" Content="New" Click="NewProject_Click"/>
+                    <Button x:Name="OpenProjectButton" Content="Open" Click="OpenProject_Click"/>
                     <Button Content="Save" Click="SaveProject_Click" Style="{StaticResource PrimaryButtonStyle}"/>
                 </StackPanel>
-                <TextBox Grid.Column="2" x:Name="ProjectNameText" Text="Untitled Integration" ToolTip="Project name"/>
-                <TextBlock Grid.Column="3" x:Name="ProjectPathText" Text="No project folder selected" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/>
-                <CheckBox Grid.Column="4" x:Name="TopmostCheck" Content="Keep studio on top" VerticalAlignment="Center" Checked="TopmostCheck_Changed" Unchecked="TopmostCheck_Changed"/>
+                <ComboBox Grid.Column="2" x:Name="RecentProjectsCombo" Margin="6,0" SelectionChanged="RecentProjectsCombo_SelectionChanged"
+                          ToolTip="Open a recently used integration project"/>
+                <TextBox Grid.Column="3" x:Name="ProjectNameText" Text="Studio Integration" ToolTip="Project name"/>
+                <TextBlock Grid.Column="4" x:Name="ProjectPathText" Text="No project folder selected" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/>
+                <CheckBox Grid.Column="5" x:Name="TopmostCheck" Content="Keep studio on top" VerticalAlignment="Center" Checked="TopmostCheck_Changed" Unchecked="TopmostCheck_Changed"/>
             </Grid>
         </Border>
 
@@ -42,7 +44,7 @@
                 <ComboBox Grid.Column="1" x:Name="WindowCombo" DisplayMemberPath="DisplayName" SelectionChanged="WindowCombo_SelectionChanged"
                           ToolTip="Minimized games remain selectable. Ctrl+Shift+F8 inside a fullscreen game starts foreground capture automatically."/>
                 <StackPanel Grid.Column="2" Orientation="Horizontal">
-                    <Button Content="Refresh" Click="RefreshWindows_Click"/>
+                    <Button x:Name="RefreshWindowsButton" Content="Refresh" Click="RefreshWindows_Click"/>
                     <Button x:Name="StartCaptureButton" Content="Start rolling capture" Click="StartCapture_Click" Style="{StaticResource PrimaryButtonStyle}"
                             ToolTip="Start capture, then restore and focus the selected game window"/>
                     <Button x:Name="StopCaptureButton" Content="Stop" Click="StopCapture_Click"/>
@@ -107,6 +109,8 @@
                             <TextBox x:Name="PreRollText" Text="12" Width="48"/>
                             <TextBlock Text="Post-roll (s)" VerticalAlignment="Center" Margin="8,3,3,3"/>
                             <TextBox x:Name="PostRollText" Text="3" Width="48"/>
+                            <TextBlock Text="Capture FPS" VerticalAlignment="Center" Margin="8,3,3,3"/>
+                            <ComboBox x:Name="CaptureFpsCombo" Width="58" ToolTip="30 FPS improves scripting precision; use 20 FPS on slower systems"/>
                             <Button x:Name="CaptureActionButton" Content="Capture previous scene  Ctrl+Shift+F8" Click="CaptureAction_Click" Style="{StaticResource PrimaryButtonStyle}"
                                     ToolTip="When used inside a fullscreen game, the first press starts foreground rolling capture and later presses capture scenes"/>
                         </WrapPanel>
@@ -152,7 +156,7 @@
                         <Separator Margin="0,10"/>
                         <TextBlock Text="UNITY MOD TARGET" Style="{StaticResource SectionHeaderStyle}"/>
                         <DockPanel>
-                            <Button DockPanel.Dock="Right" Content="Browse" Click="BrowseGame_Click"/>
+                            <Button x:Name="GameBrowseButton" DockPanel.Dock="Right" Content="Browse" Click="BrowseGame_Click"/>
                             <TextBox x:Name="GameExecutableText" ToolTip="Select the actual Unity game executable, not a launcher"/>
                         </DockPanel>
                         <DockPanel>
@@ -162,8 +166,14 @@
                         </DockPanel>
                         <TextBlock x:Name="ModPresetDescriptionText" Foreground="{StaticResource MutedTextBrush}" TextWrapping="Wrap" Margin="3,1,3,3" FontSize="11"/>
                         <WrapPanel>
-                            <Button Content="Analyze Unity runtime" Click="AnalyzeGame_Click"/>
-                            <Button Content="Generate mod project" Click="GenerateMod_Click"/>
+                            <Button x:Name="AnalyzeGameButton" Content="Analyze Unity runtime" Click="AnalyzeGame_Click"/>
+                            <Button x:Name="InstallBepInExButton" Content="Install BepInEx + initialize" Click="InstallBepInEx_Click"
+                                    ToolTip="Install the packaged x64 BepInEx build, launch the game until setup completes, then close it"/>
+                            <Button x:Name="InstallEdiButton" Content="Install EDI" Click="InstallEdi_Click"
+                                    ToolTip="Merge a fresh EDI instance into the game folder without copying or changing Gallery contents"/>
+                        </WrapPanel>
+                        <WrapPanel>
+                            <Button x:Name="GenerateModButton" Content="Generate mod project" Click="GenerateMod_Click"/>
                             <Button x:Name="BuildInstallButton" Content="Build + install" Click="BuildInstallMod_Click" Style="{StaticResource PrimaryButtonStyle}"/>
                             <Button x:Name="WatchTelemetryButton" Content="Watch discovery" Click="WatchTelemetry_Click"/>
                         </WrapPanel>

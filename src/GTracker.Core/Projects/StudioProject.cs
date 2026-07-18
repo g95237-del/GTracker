@@ -48,7 +48,7 @@ public sealed class StudioProject
 
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
     public Guid Id { get; set; } = Guid.NewGuid();
-    public string Name { get; set; } = "Untitled Integration";
+    public string Name { get; set; } = "Studio Integration";
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public GameTarget Game { get; set; } = new();
