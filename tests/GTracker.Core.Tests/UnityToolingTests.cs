@@ -171,7 +171,9 @@ public sealed class UnityToolingTests
             Assert.DoesNotContain("mscorlib", projectFile, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("netstandard.dll", projectFile, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("UnityEngine.InputLegacyModule", projectFile);
+            Assert.DoesNotContain("PlayMaker", projectFile);
             Assert.Contains("BasePlugin", plugin);
+            Assert.Contains("Optional runtime patches failed", plugin);
             Assert.Contains("GetAsyncKeyState", observer);
             Assert.Contains("IsHotkeyDown(0x31, 0x61)", observer);
             Assert.Contains("IsHotkeyDown(0x34, 0x64)", observer);
@@ -180,6 +182,7 @@ public sealed class UnityToolingTests
             Assert.Contains("_edi?.Resume()", observer);
             Assert.Contains("_edi?.SetIntensity(40)", observer);
             Assert.Contains("_edi?.SetIntensity(100)", observer);
+            Assert.DoesNotContain("PlayMakerFSM", observer);
             Assert.Contains("PostAsync($\"/Intensity/{clamped}\")", ediClient);
             Assert.Contains("public const string EnemyHit = \"enemy-hit\";", actions);
         }
@@ -202,7 +205,7 @@ public sealed class UnityToolingTests
             File.WriteAllBytes(executable, []);
             var managed = Path.Combine(gameRoot, "Game_Data", "Managed");
             Directory.CreateDirectory(managed);
-            foreach (var name in new[] { "UnityEngine.dll", "UnityEngine.CoreModule.dll", "UnityEngine.AnimationModule.dll" })
+            foreach (var name in new[] { "UnityEngine.dll", "UnityEngine.CoreModule.dll", "UnityEngine.AnimationModule.dll", "PlayMaker.dll" })
                 File.WriteAllBytes(Path.Combine(managed, name), []);
             var inspection = new UnityInspectionResult(executable, UnityRuntimeKind.Mono, "Amd64",
                 Path.Combine(gameRoot, "Game_Data"), [])
@@ -214,7 +217,16 @@ public sealed class UnityToolingTests
 
             var project = new StudioProject
             {
-                Actions = [new AuthoredAction { Name = "attack", FileName = "attack" }],
+                Actions =
+                [
+                    new AuthoredAction { Name = "attack", FileName = "attack" },
+                    new AuthoredAction
+                    {
+                        Name = "fast-attack",
+                        FileName = "fast-attack",
+                        Type = EdiGalleryType.Reaction
+                    }
+                ],
                 Game = new GameTarget
                 {
                     TriggerMappings =
@@ -224,6 +236,22 @@ public sealed class UnityToolingTests
                             Kind = UnityTriggerKind.Scene,
                             Candidate = "Boss Arena",
                             ActionName = "attack"
+                        },
+                        new UnityTriggerMapping
+                        {
+                            Kind = UnityTriggerKind.AnimationClip,
+                            Candidate = "Shared Loop",
+                            ActionName = "attack",
+                            ObjectPath = "Root/Animator",
+                            CycleDurationMilliseconds = 817
+                        },
+                        new UnityTriggerMapping
+                        {
+                            Kind = UnityTriggerKind.AnimationClip,
+                            Candidate = "Shared Loop",
+                            ActionName = "fast-attack",
+                            ObjectPath = "Root/Animator",
+                            CycleDurationMilliseconds = 408
                         }
                     ]
                 }
@@ -233,6 +261,7 @@ public sealed class UnityToolingTests
             var projectFile = await File.ReadAllTextAsync(Path.Combine(output, "IntegrationMod.csproj"));
             var preset = await File.ReadAllTextAsync(Path.Combine(output, "GamePreset.cs"));
             Assert.Contains("UnityEngine.AnimationModule", projectFile);
+            Assert.Contains("<Reference Include=\"PlayMaker\"", projectFile);
             Assert.DoesNotContain("UnityEngine.InputLegacyModule", projectFile);
             Assert.Contains("<Reference Include=\"UnityEngine\"", projectFile);
             Assert.DoesNotContain("UnityEngine.SceneManagementModule", projectFile);
@@ -240,6 +269,17 @@ public sealed class UnityToolingTests
             Assert.Contains("MatchAnimations = true", preset);
             Assert.Contains("MatchScenes = false", preset);
             Assert.Contains("[\"bossarena\"] = ActionNames.Attack", preset);
+            Assert.Contains("new AnimationMapping(\"sharedloop\", \"Root/Animator\", 817, ActionNames.Attack)", preset);
+            Assert.Contains("new AnimationMapping(\"sharedloop\", \"Root/Animator\", 408, ActionNames.FastAttack)", preset);
+            Assert.Contains("Math.Max(25, mapping.CycleDurationMilliseconds / 10)", preset);
+            Assert.Contains("IsReaction", preset);
+            var policyStart = preset.IndexOf("ReactionActions", StringComparison.Ordinal);
+            Assert.True(policyStart >= 0);
+            var policyEnd = preset.IndexOf("};", policyStart, StringComparison.Ordinal);
+            Assert.True(policyEnd > policyStart);
+            var playbackPolicy = preset[policyStart..policyEnd];
+            Assert.DoesNotContain("ActionNames.Attack", playbackPolicy);
+            Assert.Contains("ActionNames.FastAttack", playbackPolicy);
 
             var pluginPath = Path.Combine(output, "Plugin.cs");
             var observerPath = Path.Combine(output, "RuntimeObserver.cs");
@@ -259,18 +299,56 @@ public sealed class UnityToolingTests
             Assert.Equal("// hand-written patch", await File.ReadAllTextAsync(pluginPath));
             var repairedObserver = await File.ReadAllTextAsync(observerPath);
             Assert.Contains("ANIMATOR_LOOP", repairedObserver);
+            Assert.Contains("ANIMATOR_VARIANT", repairedObserver);
             Assert.Contains("ANIMATOR_STALLED", repairedObserver);
+            Assert.Contains("FSM_STATE", repairedObserver);
+            Assert.Contains("Object.FindObjectsOfType<PlayMakerFSM>", repairedObserver);
+            Assert.DoesNotContain("Resources.FindObjectsOfTypeAll", repairedObserver);
+            Assert.DoesNotContain("PollPlayMakerFsms", repairedObserver);
+            Assert.Contains("OBSERVER_SCAN", repairedObserver);
+            Assert.Contains("OBSERVER_ERROR", repairedObserver);
+            Assert.Contains("_nextScanAt = now + 1f", repairedObserver);
+            Assert.Contains("_nextAnimatorPollAt = now + 1f / 30f", repairedObserver);
+            Assert.Contains("AutoFlush = false", repairedObserver);
+            Assert.Contains("FlushTelemetry", repairedObserver);
+            Assert.Contains("stream={id}", repairedObserver);
+            Assert.Contains("StopRuntimeMappings", repairedObserver);
+            Assert.Contains("!Application.isFocused || _applicationPaused", repairedObserver);
+            Assert.Contains("LOADED_SCENE", repairedObserver);
+            Assert.Contains("preserveSceneAction: true", repairedObserver);
+            Assert.Contains("PreparePlayMakerResume", repairedObserver);
+            Assert.Contains("Application.onBeforeRender += Tick", repairedObserver);
+            Assert.Contains("HarmonyPatch(typeof(HutongGames.PlayMaker.Fsm)", repairedObserver);
+            Assert.Contains("ObservePatchedPlayMakerState", repairedObserver);
+            Assert.Contains("new[] { typeof(HutongGames.PlayMaker.FsmState) }", repairedObserver);
+            Assert.Contains("mapped && CanDrivePlayback()", repairedObserver);
             Assert.Contains("animator.isActiveAndEnabled", repairedObserver);
             Assert.Contains("StopAllMappedPlayback", repairedObserver);
             Assert.Contains("cycleDurationSeconds", repairedObserver);
+            Assert.Contains("var cycleDuration = stateLength > 0f", repairedObserver);
             Assert.Contains("Play(action, seekMilliseconds)", repairedObserver);
+            Assert.Contains("Stop(stopUnderlying: GamePreset.IsReaction(currentAction))", repairedObserver);
             Assert.Contains("GetAsyncKeyState", repairedObserver);
             Assert.DoesNotContain("Input.GetKey", repairedObserver);
             Assert.DoesNotContain("Math.Clamp", repairedObserver);
             var repairedClient = await File.ReadAllTextAsync(ediClientPath);
             Assert.Contains("/Intensity/{clamped}", repairedClient);
+            Assert.Contains("Interlocked.Increment(ref _playbackRevision)", repairedClient);
+            Assert.Contains("await PostAsync(\"/Stop\")", repairedClient);
+            Assert.Contains("await PostAsync(route)", repairedClient);
+            Assert.Contains("bool stopUnderlying = false", repairedClient);
+            Assert.Contains("if (stopUnderlying) await PostAsync(\"/Stop\")", repairedClient);
+            Assert.Contains("lock (_enqueueGate)", repairedClient);
+            Assert.DoesNotContain("clearPending", repairedClient);
+            Assert.DoesNotContain("_commands.Count", repairedClient);
+            var playStart = repairedClient.IndexOf("public void Play", StringComparison.Ordinal);
+            Assert.True(playStart >= 0);
+            var stopStart = repairedClient.IndexOf("public void Stop", playStart, StringComparison.Ordinal);
+            Assert.True(stopStart > playStart);
+            Assert.DoesNotContain("/Stop", repairedClient[playStart..stopStart]);
             var repairedProject = await File.ReadAllTextAsync(Path.Combine(output, "IntegrationMod.csproj"));
             Assert.Contains("<Reference Include=\"UnityEngine\"", repairedProject);
+            Assert.Contains("<Reference Include=\"PlayMaker\"", repairedProject);
             Assert.DoesNotContain("UnityEngine.SceneManagementModule", repairedProject);
         }
         finally
@@ -291,6 +369,9 @@ public sealed class UnityToolingTests
             Directory.CreateDirectory(Path.Combine(gameRoot, "BepInEx", "core"));
             var executable = Path.Combine(gameRoot, "FixtureGame.exe");
             File.WriteAllBytes(executable, []);
+            var managed = Path.Combine(gameRoot, "FixtureGame_Data", "Managed");
+            Directory.CreateDirectory(managed);
+            File.WriteAllBytes(Path.Combine(managed, "PlayMaker.dll"), []);
             var inspection = new UnityInspectionResult(executable, UnityRuntimeKind.Mono, "Amd64",
                 Path.Combine(gameRoot, "FixtureGame_Data"), [])
             {
@@ -468,6 +549,14 @@ public sealed class UnityToolingTests
 
         namespace HarmonyLib
         {
+            [AttributeUsage(AttributeTargets.Class)]
+            public sealed class HarmonyPatchAttribute : Attribute
+            {
+                public HarmonyPatchAttribute(Type type, string methodName) { }
+                public HarmonyPatchAttribute(Type type, string methodName, Type[] argumentTypes) { }
+            }
+            [AttributeUsage(AttributeTargets.Method)]
+            public sealed class HarmonyPostfixAttribute : Attribute { }
             public sealed class Harmony
             {
                 public Harmony(string id) { }
@@ -482,6 +571,7 @@ public sealed class UnityToolingTests
             {
                 public string name { get; set; } = string.Empty;
                 public static void Destroy(Object value) { }
+                public static T[] FindObjectsOfType<T>() => [];
             }
             public class GameObject : Object
             {
@@ -496,7 +586,11 @@ public sealed class UnityToolingTests
                 public Transform transform { get; } = new();
                 public int GetInstanceID() => ++_nextId;
             }
-            public class MonoBehaviour : Component
+            public class Behaviour : Component
+            {
+                public bool isActiveAndEnabled { get; set; } = true;
+            }
+            public class MonoBehaviour : Behaviour
             {
                 public MonoBehaviour() { }
                 public MonoBehaviour(IntPtr pointer) { }
@@ -506,11 +600,10 @@ public sealed class UnityToolingTests
             {
                 public Transform? parent { get; set; }
             }
-            public class Animator : Component
+            public class Animator : Behaviour
             {
                 public int layerCount => 1;
                 public float speed { get; set; } = 1;
-                public bool isActiveAndEnabled { get; set; } = true;
                 public AnimatorStateInfo GetCurrentAnimatorStateInfo(int layer) => default;
                 public AnimatorClipInfo[] GetCurrentAnimatorClipInfo(int layer) => [];
             }
@@ -540,10 +633,12 @@ public sealed class UnityToolingTests
             public static class Time
             {
                 public static float unscaledTime => 0;
+                public static int frameCount => 0;
             }
             public static class Application
             {
                 public static bool isFocused => true;
+                public static event Action? onBeforeRender;
             }
         }
 
@@ -560,6 +655,22 @@ public sealed class UnityToolingTests
                 public static event Action<Scene, LoadSceneMode>? sceneLoaded;
                 public static event Action<Scene, Scene>? activeSceneChanged;
                 public static Scene GetActiveScene() => default;
+            }
+        }
+
+        public class PlayMakerFSM : UnityEngine.MonoBehaviour
+        {
+            public string FsmName { get; set; } = string.Empty;
+            public string ActiveStateName { get; set; } = string.Empty;
+        }
+
+        namespace HutongGames.PlayMaker
+        {
+            public sealed class FsmState { }
+            public sealed class Fsm
+            {
+                public PlayMakerFSM FsmComponent { get; } = new();
+                public void SwitchState(FsmState state) { }
             }
         }
         """;

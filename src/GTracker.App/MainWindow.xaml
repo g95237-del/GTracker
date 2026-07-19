@@ -191,7 +191,7 @@
                         <ListBox x:Name="UnityTelemetryList" Height="180" MinHeight="120" MaxHeight="520" Margin="3" FontFamily="Consolas" FontSize="11"
                                   ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto"
                                   ScrollViewer.ScrollChanged="UnityTelemetryList_ScrollChanged"
-                                  ToolTip="Live scene and Animator candidates emitted by the installed discovery plugin"/>
+                                   ToolTip="Live scene, Animator, and PlayMaker FSM candidates emitted by the installed discovery plugin"/>
                         <Thumb Height="7" Margin="3,0" Cursor="SizeNS" Background="{StaticResource EdgeBrush}"
                                DragDelta="TelemetryResize_DragDelta" ToolTip="Drag to resize the telemetry watcher"/>
                         <WrapPanel Margin="0,1">

@@ -42,6 +42,74 @@ public sealed class UnityTelemetryLogTests
     }
 
     [Fact]
+    public void Correlate_UsesPlayMakerStateInsideClip()
+    {
+        var start = DateTimeOffset.UtcNow;
+        UnityTelemetryEvent[] events =
+        [
+            new(start, "SCENE", "Stage_Main_00", "", "Stage_Main_00", ""),
+            new(start.AddSeconds(1), "FSM_STATE", "Stage_Main_00", "Game/FSM", "Battle / PlayerClimax", "")
+        ];
+
+        var result = UnityTelemetryLog.Correlate(events, start, start.AddSeconds(3));
+
+        Assert.Equal("Battle / PlayerClimax", result.AnimationName);
+        Assert.True(UnityTelemetryLog.IsAnimatorEvent("FSM_STATE"));
+    }
+
+    [Fact]
+    public void Correlate_CarriesActivePlayMakerStateIntoClip()
+    {
+        var start = DateTimeOffset.UtcNow;
+        UnityTelemetryEvent[] events =
+        [
+            new(start.AddSeconds(-10), "SCENE", "Stage_Main_00", "", "Stage_Main_00", ""),
+            new(start.AddSeconds(-2), "FSM_STATE", "DontDestroyOnLoad", "Game/FSM", "Battle / PlayerClimax",
+                "stream=42;fsm=Battle;state=PlayerClimax"),
+            new(start.AddSeconds(2), "FSM_EXIT", "DontDestroyOnLoad", "Game/FSM", "Battle / PlayerClimax",
+                "stream=42;reason=state-empty")
+        ];
+
+        var result = UnityTelemetryLog.Correlate(events, start, start.AddSeconds(3));
+
+        Assert.Equal("Battle / PlayerClimax", result.AnimationName);
+    }
+
+    [Fact]
+    public void Correlate_DoesNotCarryExitedPlayMakerStateIntoClip()
+    {
+        var start = DateTimeOffset.UtcNow;
+        UnityTelemetryEvent[] events =
+        [
+            new(start.AddSeconds(-10), "SCENE", "Stage_Main_00", "", "Stage_Main_00", ""),
+            new(start.AddSeconds(-3), "FSM_STATE", "Stage_Main_00", "Game/FSM", "Battle / PlayerClimax",
+                "stream=42;fsm=Battle;state=PlayerClimax"),
+            new(start.AddSeconds(-1), "FSM_EXIT", "Stage_Main_00", "Game/FSM", "Battle / PlayerClimax",
+                "stream=42;reason=state-empty")
+        ];
+
+        var result = UnityTelemetryLog.Correlate(events, start, start.AddSeconds(3));
+
+        Assert.Empty(result.AnimationName);
+        Assert.Empty(result.AnimationCandidates);
+    }
+
+    [Fact]
+    public void Correlate_DoesNotTreatAdditiveLoadAsActiveScene()
+    {
+        var start = DateTimeOffset.UtcNow;
+        UnityTelemetryEvent[] events =
+        [
+            new(start, "SCENE", "Stage_Main_00", "", "Stage_Main_00", "active"),
+            new(start.AddSeconds(1), "LOADED_SCENE", "Stage_Main_00", "", "EffectsOverlay", "Additive")
+        ];
+
+        var result = UnityTelemetryLog.Correlate(events, start, start.AddSeconds(2));
+
+        Assert.Equal("Stage_Main_00", result.SceneName);
+    }
+
+    [Fact]
     public void Read_ParsesStructuredTelemetryAndSkipsMalformedLines()
     {
         var directory = Path.Combine(Path.GetTempPath(), "EdiIntegrationStudio.Tests", Guid.NewGuid().ToString("N"));
@@ -56,6 +124,28 @@ public sealed class UnityTelemetryLogTests
 
             Assert.Equal("Attack", item.Candidate);
             Assert.Equal("Player", item.ObjectPath);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void Read_IgnoresAnUnterminatedTelemetryTail()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "EdiIntegrationStudio.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var path = Path.Combine(directory, "telemetry.tsv");
+            File.WriteAllText(path,
+                "2026-07-15T20:00:00.0000000+00:00\tSCENE\tRoom\t\tRoom\tactive\n" +
+                "2026-07-15T20:00:01.0000000+00:00\tANIMATOR\tRoom\tPlayer\tAttack");
+
+            var item = Assert.Single(UnityTelemetryLog.Read(path));
+
+            Assert.Equal("SCENE", item.Kind);
         }
         finally
         {

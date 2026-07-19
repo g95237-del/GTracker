@@ -1136,14 +1136,14 @@ public partial class MainWindow : Window
         }
         if (UnityTelemetryList.SelectedItem is not UnityTelemetryEntry entry || string.IsNullOrWhiteSpace(entry.Candidate))
         {
-            SetStatus("Select a discovered Unity scene or Animator clip first.", true);
+            SetStatus("Select a discovered Unity scene, animation, or FSM state first.", true);
             return;
         }
         if (entry.Kind is "SCENE" or "ACTIVE_SCENE") _correlatedUnityScene = entry.Candidate;
         else if (UnityTelemetryLog.IsAnimatorEvent(entry.Kind)) _correlatedUnityAnimation = entry.Candidate;
         else
         {
-            SetStatus("Only scene and Animator clip entries can name an authored scene.", true);
+            SetStatus("Only scene, animation, and FSM state entries can name an authored scene.", true);
             return;
         }
         ApplyRuntimeName(entry.Candidate);
@@ -1160,7 +1160,7 @@ public partial class MainWindow : Window
             return;
         }
         if (UnityTelemetryList.SelectedItem is not UnityTelemetryEntry entry ||
-            entry.Kind is not ("ANIMATOR" or "ANIMATOR_LOOP" or "ANIMATOR_RESTART") ||
+            entry.Kind is not ("ANIMATOR" or "ANIMATOR_LOOP" or "ANIMATOR_RESTART" or "ANIMATOR_VARIANT") ||
             string.IsNullOrWhiteSpace(entry.Candidate))
         {
             SetStatus("Select an Animator state, loop, or restart event first.", true);
@@ -1223,7 +1223,9 @@ public partial class MainWindow : Window
             _pendingCapturedTriggerMapping = new UnityTriggerMapping
             {
                 Kind = UnityTriggerKind.AnimationClip,
-                Candidate = entry.Candidate
+                Candidate = entry.Candidate,
+                ObjectPath = entry.ObjectPath,
+                CycleDurationMilliseconds = Math.Max(1, (int)Math.Round(timing.CycleDuration.TotalMilliseconds))
             };
             LoopCheck.IsChecked = timing.IsLooping;
             if (IsPlaceholderSceneName(ActionNameText.Text)) ApplyRuntimeName(entry.Candidate);
@@ -1608,7 +1610,8 @@ public partial class MainWindow : Window
                     mapping.ActionName = action.Name;
             }
             if (automaticMapping is not null)
-                candidate.Game.SetTriggerMapping(automaticMapping.Kind, automaticMapping.Candidate, action.Name);
+                candidate.Game.SetTriggerMapping(automaticMapping.Kind, automaticMapping.Candidate, action.Name,
+                    automaticMapping.ObjectPath, automaticMapping.CycleDurationMilliseconds);
             var errors = _validator.Validate(candidate).Where(issue => issue.Severity == ValidationSeverity.Error).ToArray();
             if (errors.Length > 0)
             {
@@ -1767,7 +1770,9 @@ public partial class MainWindow : Window
                 {
                     Kind = mapping.Kind,
                     Candidate = mapping.Candidate,
-                    ActionName = mapping.ActionName
+                    ActionName = mapping.ActionName,
+                    ObjectPath = mapping.ObjectPath,
+                    CycleDurationMilliseconds = mapping.CycleDurationMilliseconds
                 }).ToList(),
                 Simulator = new LinearSimulatorLayout
                 {
@@ -2004,9 +2009,9 @@ public partial class MainWindow : Window
         ModPresetDescriptionText.Text = ModPresetCombo.SelectedItem switch
         {
             UnityModPresetKind.SceneNames => "Watch Unity scenes and automatically play an authored scene when the normalized names match.",
-            UnityModPresetKind.AnimationNames => "Watch Animator clips and automatically play an authored scene when the normalized names match.",
-            UnityModPresetKind.SceneAndAnimationNames => "Enable exact-name scene and Animator matching. Start with Discovery to check for false triggers first.",
-            _ => "Safest preset: record scene and Animator changes without automatically triggering authored scenes."
+            UnityModPresetKind.AnimationNames => "Watch animation and PlayMaker FSM states and play an authored scene when normalized names match.",
+            UnityModPresetKind.SceneAndAnimationNames => "Enable exact-name scene, animation, and FSM matching. Start with Discovery to check for false triggers first.",
+            _ => "Safest preset: record scene, animation, and FSM changes without automatically triggering authored scenes."
         };
     }
 
@@ -2377,7 +2382,7 @@ public partial class MainWindow : Window
             PauseTelemetryButton.IsEnabled = true;
             RefreshUnityTelemetry();
             SetStatus(File.Exists(path)
-                ? "Watching live Unity scene and Animator discovery."
+                ? "Watching live Unity scene, Animator, and PlayMaker FSM discovery."
                 : "Discovery watch started. Launch the game to create telemetry.");
             UpdateTelemetryOutputStatus();
         }
@@ -2417,7 +2422,8 @@ public partial class MainWindow : Window
             {
                 var item = events[index];
                 var time = item.Timestamp.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture);
-                var candidate = string.IsNullOrWhiteSpace(item.Candidate) ? item.Scene : item.Candidate;
+                var candidate = item.Candidate;
+                if (string.IsNullOrWhiteSpace(candidate) && item.Kind is "SCENE" or "ACTIVE_SCENE") candidate = item.Scene;
                 if (IsTelemetrySuppressed(item.Kind, candidate, item.ObjectPath)) continue;
                 var location = string.IsNullOrWhiteSpace(item.ObjectPath) ? item.Scene : item.ObjectPath;
                 var timingText = UnityTelemetryLog.TryGetAnimatorTiming(item, out var timing)
@@ -2575,26 +2581,34 @@ public partial class MainWindow : Window
         if (UnityTelemetryList.SelectedItem is not UnityTelemetryEntry entry ||
             TelemetryActionCombo.SelectedItem is not AuthoredAction action)
         {
-            SetStatus("Select a discovered scene/animation and a saved authored scene first.", true);
+            SetStatus("Select a discovered scene, animation, or FSM state and a saved authored scene first.", true);
             return;
         }
         var kind = entry.Kind switch
         {
             "SCENE" or "ACTIVE_SCENE" => UnityTriggerKind.Scene,
-            "ANIMATOR" or "ANIMATOR_LOOP" or "ANIMATOR_RESTART" or "ANIMATOR_RESUME" or
-                "ANIMATOR_STALLED" or "ANIMATOR_END" => UnityTriggerKind.AnimationClip,
+            _ when UnityTelemetryLog.IsAnimatorEvent(entry.Kind) => UnityTriggerKind.AnimationClip,
             _ => (UnityTriggerKind?)null
         };
         if (kind is null || string.IsNullOrWhiteSpace(entry.Candidate))
         {
-            SetStatus("Only scene and Animator clip discovery entries can be mapped.", true);
+            SetStatus("Only scene, animation, and FSM state discovery entries can be mapped.", true);
             return;
         }
 
-        _project.Game.SetTriggerMapping(kind.Value, entry.Candidate, action.Name);
+        var telemetryEvent = new UnityTelemetryEvent(entry.Timestamp, entry.Kind, entry.Scene, entry.ObjectPath,
+            entry.Candidate, entry.Details);
+        var cycleDurationMilliseconds = UnityTelemetryLog.TryGetAnimatorTiming(telemetryEvent, out var timing)
+            ? Math.Max(1, (int)Math.Round(timing.CycleDuration.TotalMilliseconds))
+            : (int?)null;
+        var objectPath = kind == UnityTriggerKind.AnimationClip ? entry.ObjectPath : string.Empty;
+        _project.Game.SetTriggerMapping(kind.Value, entry.Candidate, action.Name, objectPath, cycleDurationMilliseconds);
         UpdateTriggerMappingStatus();
         if (_projectDirectory is null || await SaveProjectAsync())
-            SetStatus($"Mapped {kind} '{entry.Candidate}' to '{action.Name}'. Use Build + install to apply it.");
+        {
+            var timingText = cycleDurationMilliseconds is { } duration ? $" at {duration} ms" : string.Empty;
+            SetStatus($"Mapped {kind} '{entry.Candidate}'{timingText} to '{action.Name}'. Use Build + install to apply it.");
+        }
     }
 
     private async void ClearTriggerMappings_Click(object sender, RoutedEventArgs e)

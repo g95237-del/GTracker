@@ -72,19 +72,30 @@ public sealed class GameTarget
     public List<UnityTriggerMapping> TriggerMappings { get; set; } = [];
     public LinearSimulatorLayout Simulator { get; set; } = new();
 
-    public void SetTriggerMapping(UnityTriggerKind kind, string candidate, string actionName)
+    public void SetTriggerMapping(
+        UnityTriggerKind kind,
+        string candidate,
+        string actionName,
+        string objectPath = "",
+        int? cycleDurationMilliseconds = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(candidate);
         ArgumentException.ThrowIfNullOrWhiteSpace(actionName);
         candidate = candidate.Trim();
         actionName = actionName.Trim();
+        objectPath = objectPath.Trim();
+        if (cycleDurationMilliseconds <= 0) cycleDurationMilliseconds = null;
         TriggerMappings.RemoveAll(mapping => mapping.Kind == kind &&
-            mapping.Candidate.Equals(candidate, StringComparison.OrdinalIgnoreCase));
+            mapping.Candidate.Equals(candidate, StringComparison.OrdinalIgnoreCase) &&
+            mapping.ObjectPath.Equals(objectPath, StringComparison.OrdinalIgnoreCase) &&
+            mapping.CycleDurationMilliseconds == cycleDurationMilliseconds);
         TriggerMappings.Add(new UnityTriggerMapping
         {
             Kind = kind,
             Candidate = candidate,
-            ActionName = actionName
+            ActionName = actionName,
+            ObjectPath = objectPath,
+            CycleDurationMilliseconds = cycleDurationMilliseconds
         });
     }
 }
@@ -94,6 +105,8 @@ public sealed class UnityTriggerMapping
     public UnityTriggerKind Kind { get; set; }
     public string Candidate { get; set; } = string.Empty;
     public string ActionName { get; set; } = string.Empty;
+    public string ObjectPath { get; set; } = string.Empty;
+    public int? CycleDurationMilliseconds { get; set; }
 }
 
 public sealed class LinearSimulatorLayout

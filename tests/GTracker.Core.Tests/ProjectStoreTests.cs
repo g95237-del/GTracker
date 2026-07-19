@@ -18,6 +18,19 @@ public sealed class ProjectStoreTests
     }
 
     [Fact]
+    public void SetTriggerMapping_AllowsTimingVariantsForSameCandidate()
+    {
+        var target = new GameTarget();
+
+        target.SetTriggerMapping(UnityTriggerKind.AnimationClip, "Loop", "normal", "Root/Animator", 817);
+        target.SetTriggerMapping(UnityTriggerKind.AnimationClip, "Loop", "fast", "Root/Animator", 204);
+
+        Assert.Equal(2, target.TriggerMappings.Count);
+        Assert.Contains(target.TriggerMappings, mapping => mapping.ActionName == "normal" && mapping.CycleDurationMilliseconds == 817);
+        Assert.Contains(target.TriggerMappings, mapping => mapping.ActionName == "fast" && mapping.CycleDurationMilliseconds == 204);
+    }
+
+    [Fact]
     public async Task SaveAndLoad_RoundTripsVersionedProject()
     {
         var directory = Path.Combine(Path.GetTempPath(), "EdiIntegrationStudio.Tests", Guid.NewGuid().ToString("N"));
@@ -42,7 +55,9 @@ public sealed class ProjectStoreTests
                         {
                             Kind = UnityTriggerKind.AnimationClip,
                             Candidate = "EnemyAttack",
-                            ActionName = "intro"
+                            ActionName = "intro",
+                            ObjectPath = "Enemies/Goblin/Animator",
+                            CycleDurationMilliseconds = 850
                         }
                     ],
                     Simulator = new LinearSimulatorLayout
@@ -81,7 +96,10 @@ public sealed class ProjectStoreTests
             Assert.Equal("net6.0", loaded.Game.TargetFramework);
             Assert.Equal(UnityModPresetKind.AnimationNames, loaded.Game.ModPreset);
             Assert.Equal(@"C:\mods\sample", loaded.Game.ModProjectPath);
-            Assert.Equal("EnemyAttack", Assert.Single(loaded.Game.TriggerMappings).Candidate);
+            var mapping = Assert.Single(loaded.Game.TriggerMappings);
+            Assert.Equal("EnemyAttack", mapping.Candidate);
+            Assert.Equal("Enemies/Goblin/Animator", mapping.ObjectPath);
+            Assert.Equal(850, mapping.CycleDurationMilliseconds);
             Assert.False(loaded.Game.Simulator.IsVisible);
             Assert.Equal(0.72, loaded.Game.Simulator.CenterX);
             Assert.Equal(37, loaded.Game.Simulator.RotationDegrees);

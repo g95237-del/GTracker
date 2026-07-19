@@ -76,6 +76,7 @@ public sealed class UnityModScaffolder
             ? inspection.Runtime == UnityRuntimeKind.Mono ? "netstandard2.0" : "net6.0"
             : inspection.RecommendedTargetFramework;
         var telemetryFile = Path.Combine(gameRoot, "BepInEx", "config", pluginGuid + ".telemetry.tsv");
+        var hasPlayMaker = HasRuntimeAssembly(inspection, "PlayMaker.dll");
         ediBaseUrl = parsedEdiUrl.ToString().TrimEnd('/');
 
         var files = new Dictionary<string, string>
@@ -84,7 +85,7 @@ public sealed class UnityModScaffolder
             ["Plugin.cs"] = inspection.Runtime == UnityRuntimeKind.Mono
                 ? CreateMonoPlugin(pluginName, pluginGuid, project, inspection, ediBaseUrl)
                 : CreateIl2CppPlugin(pluginName, pluginGuid, project, inspection, ediBaseUrl),
-            ["RuntimeObserver.cs"] = CreateRuntimeObserver(pluginGuid, inspection.Runtime),
+            ["RuntimeObserver.cs"] = CreateRuntimeObserver(pluginGuid, inspection.Runtime, hasPlayMaker),
             ["GamePreset.cs"] = CreateGamePreset(project, pluginGuid, preset),
             ["EdiClient.cs"] = CreateEdiClient(),
             ["ActionNames.cs"] = CreateActionNames(project),
@@ -178,7 +179,8 @@ public sealed class UnityModScaffolder
         await ReplaceFileAsync(Path.Combine(projectDirectory, "IntegrationMod.csproj"),
             CreateProjectFile(inspection, targetFramework), cancellationToken);
         await ReplaceFileAsync(Path.Combine(projectDirectory, "RuntimeObserver.cs"),
-            CreateRuntimeObserver(manifest.PluginGuid, inspection.Runtime), cancellationToken);
+            CreateRuntimeObserver(manifest.PluginGuid, inspection.Runtime,
+                HasRuntimeAssembly(inspection, "PlayMaker.dll")), cancellationToken);
         await ReplaceFileAsync(Path.Combine(projectDirectory, "EdiClient.cs"),
             CreateEdiClient(), cancellationToken);
         manifest.Architecture = inspection.Architecture;
@@ -247,6 +249,8 @@ public sealed class UnityModScaffolder
                 Path.Combine(managedDirectory, "UnityEngine.AnimationModule.dll"));
             AppendReferenceIfExists(references, "UnityEngine.SceneManagementModule", @"$(DataRoot)\Managed\UnityEngine.SceneManagementModule.dll",
                 Path.Combine(managedDirectory, "UnityEngine.SceneManagementModule.dll"));
+            AppendReferenceIfExists(references, "PlayMaker", @"$(DataRoot)\Managed\PlayMaker.dll",
+                Path.Combine(managedDirectory, "PlayMaker.dll"));
         }
         else
         {
@@ -257,6 +261,8 @@ public sealed class UnityModScaffolder
             AppendReference(references, "UnityEngine.CoreModule", @"$(GameRoot)\BepInEx\interop\UnityEngine.CoreModule.dll");
             AppendReference(references, "UnityEngine.AnimationModule", @"$(GameRoot)\BepInEx\interop\UnityEngine.AnimationModule.dll");
             AppendReference(references, "UnityEngine.SceneManagementModule", @"$(GameRoot)\BepInEx\interop\UnityEngine.SceneManagementModule.dll");
+            AppendReferenceIfExists(references, "PlayMaker", @"$(GameRoot)\BepInEx\interop\PlayMaker.dll",
+                Path.Combine(Path.GetDirectoryName(inspection.ExecutablePath)!, "BepInEx", "interop", "PlayMaker.dll"));
         }
 
         return $$"""
@@ -291,6 +297,14 @@ public sealed class UnityModScaffolder
         if (File.Exists(physicalPath)) AppendReference(builder, include, hintPath);
     }
 
+    private static bool HasRuntimeAssembly(UnityInspectionResult inspection, string fileName)
+    {
+        var path = inspection.Runtime == UnityRuntimeKind.Mono
+            ? Path.Combine(inspection.DataDirectory, "Managed", fileName)
+            : Path.Combine(Path.GetDirectoryName(inspection.ExecutablePath)!, "BepInEx", "interop", fileName);
+        return File.Exists(path);
+    }
+
     private static string CreateMonoPlugin(
         string pluginName,
         string pluginGuid,
@@ -317,9 +331,10 @@ public sealed class UnityModScaffolder
                 Edi = new EdiClient({{CSharpLiteral(ediBaseUrl)}}, message => Logger.LogWarning(message));
                 RuntimeObserver.Configure(Edi, message => Logger.LogInfo(message));
                 _harmony = new Harmony("{{pluginGuid}}");
-                _harmony.PatchAll();
+                try { _harmony.PatchAll(); }
+                catch (Exception exception) { Logger.LogWarning($"Optional runtime patches failed: {exception}"); }
                 _observer = gameObject.AddComponent<RuntimeObserver>();
-                Logger.LogInfo("EDI integration loaded; runtime scene/Animator discovery is active.");
+                Logger.LogInfo("EDI integration loaded; runtime scene, Animator, and optional PlayMaker discovery is active.");
             }
 
             private void OnDestroy()
@@ -358,9 +373,10 @@ public sealed class UnityModScaffolder
                 Edi = new EdiClient({{CSharpLiteral(ediBaseUrl)}}, message => Log.LogWarning(message));
                 RuntimeObserver.Configure(Edi, message => Log.LogInfo(message));
                 _harmony = new Harmony("{{pluginGuid}}");
-                _harmony.PatchAll();
+                try { _harmony.PatchAll(); }
+                catch (Exception exception) { Log.LogWarning($"Optional runtime patches failed: {exception}"); }
                 _observer = AddComponent<RuntimeObserver>();
-                Log.LogInfo("EDI IL2CPP integration loaded; runtime scene/Animator discovery is active.");
+                Log.LogInfo("EDI IL2CPP integration loaded; runtime scene, Animator, and optional PlayMaker discovery is active.");
             }
 
             public override bool Unload()
@@ -375,11 +391,31 @@ public sealed class UnityModScaffolder
         // Keep IL2CPP object access on Unity's main thread. Queue only plain values to EdiClient.
         """;
 
-    private static string CreateRuntimeObserver(string pluginGuid, UnityRuntimeKind runtime)
+    private static string CreateRuntimeObserver(string pluginGuid, UnityRuntimeKind runtime, bool hasPlayMaker)
     {
         var il2CppConstructor = runtime == UnityRuntimeKind.Il2Cpp
             ? "    public RuntimeObserver(IntPtr pointer) : base(pointer) { }\n"
             : string.Empty;
+        var playMakerFields = hasPlayMaker
+            ? "    private static RuntimeObserver? _instance;\n" +
+              "    private readonly Dictionary<int, PlayMakerFSM> _playMakerFsms = new();\n" +
+              "    private readonly Dictionary<int, FsmSnapshot> _playMakerStates = new();"
+            : string.Empty;
+        var playMakerAwakeStatement = hasPlayMaker ? "        _instance = this;\n" : string.Empty;
+        var playMakerDestroyStatement = hasPlayMaker
+            ? "        if (ReferenceEquals(_instance, this)) _instance = null;\n"
+            : string.Empty;
+        var playMakerScanStatement = hasPlayMaker
+            ? "        RunObserverStep(\"playmaker-scan\", () => playMakerCount = ScanPlayMakerFsms());\n"
+            : string.Empty;
+        var playMakerResetStatements = hasPlayMaker
+            ? "        _playMakerFsms.Clear();\n        _playMakerStates.Clear();\n"
+            : string.Empty;
+        var playMakerPlaybackResetStatement = hasPlayMaker
+            ? "        PreparePlayMakerResume(_activeAnimatorActions);\n"
+            : string.Empty;
+        var playMakerMethods = hasPlayMaker ? CreatePlayMakerObserverMethods() : string.Empty;
+        var playMakerPatch = hasPlayMaker ? CreatePlayMakerPatch() : string.Empty;
         return $$"""
         using System.Collections.Generic;
         using System.Globalization;
@@ -387,6 +423,7 @@ public sealed class UnityModScaffolder
         using System.Linq;
         using System.Runtime.InteropServices;
         using BepInEx;
+        using HarmonyLib;
         using UnityEngine;
         using UnityEngine.SceneManagement;
 
@@ -395,11 +432,20 @@ public sealed class UnityModScaffolder
             private static EdiClient? _edi;
             private static Action<string>? _log;
             private readonly Dictionary<int, Animator> _animators = new();
+        {{playMakerFields}}
             private readonly Dictionary<string, StateSnapshot> _states = new();
             private readonly Dictionary<string, string> _activeAnimatorActions = new();
+            private readonly Dictionary<string, float> _observerErrorNextAt = new();
             private StreamWriter? _telemetry;
+            private int _lastTickFrame = -1;
+            private float _nextAnimatorPollAt;
             private float _nextScanAt;
+            private float _nextTelemetryFlushAt;
             private string _activeSceneAction = string.Empty;
+            private string _currentRuntimeActionKey = string.Empty;
+            private string _lastScanSummary = string.Empty;
+            private bool _applicationPaused;
+            private bool _playbackSuspended;
             private bool _hotkeysUnavailable;
             private bool _hasFocus = true;
             private bool _key1Down;
@@ -424,7 +470,7 @@ public sealed class UnityModScaffolder
                     var path = Path.Combine(Paths.ConfigPath, GamePreset.TelemetryFileName);
                     _telemetry = new StreamWriter(new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
                     {
-                        AutoFlush = true
+                        AutoFlush = false
                     };
                 }
                 catch (Exception exception)
@@ -434,32 +480,73 @@ public sealed class UnityModScaffolder
 
                 SceneManager.sceneLoaded += OnSceneLoaded;
                 SceneManager.activeSceneChanged += OnActiveSceneChanged;
-                var scene = SceneManager.GetActiveScene();
+                Application.onBeforeRender += Tick;
+        {{playMakerAwakeStatement}}        var scene = SceneManager.GetActiveScene();
                 _hasFocus = Application.isFocused;
                 SyncHotkeyState();
                 ObserveScene(scene.name, "startup", triggerMapping: true);
-                ScanAnimators();
+                _nextScanAt = 0f;
+                RunObserverStep("startup-scan", ScanRuntimeObjects);
             }
 
             private void OnDestroy()
             {
                 SceneManager.sceneLoaded -= OnSceneLoaded;
                 SceneManager.activeSceneChanged -= OnActiveSceneChanged;
-                StopAllMappedPlayback("observer-stopped");
+                Application.onBeforeRender -= Tick;
+        {{playMakerDestroyStatement}}        StopAllMappedPlayback("observer-stopped");
                 Emit("SESSION", SceneManager.GetActiveScene().name, string.Empty, "observer-stopped", string.Empty);
+                FlushTelemetry();
                 _telemetry?.Dispose();
                 _telemetry = null;
             }
 
-            private void Update()
+            private void Update() => Tick();
+
+            private void Tick()
             {
+                var frame = Time.frameCount;
+                if (frame == _lastTickFrame) return;
+                _lastTickFrame = frame;
                 PollHotkeys();
-                if (Time.unscaledTime >= _nextScanAt)
+                var now = Time.unscaledTime;
+                if (now >= _nextTelemetryFlushAt)
                 {
-                    ScanAnimators();
-                    _nextScanAt = Time.unscaledTime + 2f;
+                    _nextTelemetryFlushAt = now + 1f;
+                    FlushTelemetry();
                 }
-                PollAnimators();
+                if (now >= _nextScanAt)
+                {
+                    _nextScanAt = now + 1f;
+                    RunObserverStep("runtime-scan", ScanRuntimeObjects);
+                }
+                if (!_hasFocus || !Application.isFocused || _applicationPaused) return;
+                if (now < _nextAnimatorPollAt) return;
+                _nextAnimatorPollAt = now + 1f / 30f;
+                RunObserverStep("animator-poll", PollAnimators);
+            }
+
+            private void FlushTelemetry()
+            {
+                try { _telemetry?.Flush(); }
+                catch (Exception exception) { _log?.Invoke($"Telemetry flush failed: {exception.Message}"); }
+            }
+
+            private void RunObserverStep(string stage, Action action)
+            {
+                try { action(); }
+                catch (Exception exception) { ReportObserverError(stage, exception); }
+            }
+
+            private void ReportObserverError(string stage, Exception exception)
+            {
+                var signature = stage + ":" + exception.GetType().Name;
+                var now = Time.unscaledTime;
+                if (_observerErrorNextAt.TryGetValue(signature, out var nextAt) && now < nextAt) return;
+                _observerErrorNextAt[signature] = now + 10f;
+                _log?.Invoke($"Runtime discovery {stage} failed: {exception}");
+                Emit("OBSERVER_ERROR", SceneManager.GetActiveScene().name, string.Empty, stage,
+                    $"type={exception.GetType().Name};message={exception.Message}");
             }
 
             private void PollHotkeys()
@@ -531,26 +618,45 @@ public sealed class UnityModScaffolder
             {
                 _hasFocus = hasFocus;
                 SyncHotkeyState();
-                if (!hasFocus) StopAllMappedPlayback("application-focus-lost");
+                if (!hasFocus) StopAllMappedPlayback("application-focus-lost", preserveSceneAction: true);
+                else ResumeMappedScene("application-focus-restored");
             }
 
             private void OnApplicationPause(bool paused)
             {
-                if (paused) StopAllMappedPlayback("application-paused");
+                _applicationPaused = paused;
+                if (paused) StopAllMappedPlayback("application-paused", preserveSceneAction: true);
+                else ResumeMappedScene("application-resumed");
             }
 
             private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
             {
+                if (mode == LoadSceneMode.Additive)
+                {
+                    _nextScanAt = 0f;
+                    Emit("LOADED_SCENE", SceneManager.GetActiveScene().name, string.Empty, scene.name, "Additive");
+                    return;
+                }
+                ResetRuntimeDiscovery();
                 ObserveScene(scene.name, mode.ToString(), triggerMapping: false);
-                ScanAnimators();
             }
 
             private void OnActiveSceneChanged(Scene previous, Scene current)
             {
                 StopAllMappedPlayback("active-scene-changed");
-                _states.Clear();
+                ResetRuntimeDiscovery();
                 Emit("ACTIVE_SCENE", current.name, string.Empty, current.name, $"from={previous.name}");
                 ObserveScene(current.name, "active", triggerMapping: true);
+            }
+
+            private void ResetRuntimeDiscovery()
+            {
+                StopRuntimeMappings("runtime-discovery-reset");
+                _animators.Clear();
+        {{playMakerResetStatements}}        _states.Clear();
+                _lastScanSummary = string.Empty;
+                _nextAnimatorPollAt = 0f;
+                _nextScanAt = 0f;
             }
 
             private void ObserveScene(string sceneName, string details, bool triggerMapping)
@@ -560,14 +666,41 @@ public sealed class UnityModScaffolder
                 {
                     _log?.Invoke($"Scene preset matched '{sceneName}' -> '{action}'.");
                     _activeSceneAction = action;
+                    if (!CanDrivePlayback())
+                    {
+                        _playbackSuspended = true;
+                        return;
+                    }
                     _edi?.Play(action);
                     Emit("SCRIPT_PLAY", sceneName, string.Empty, action, "source=scene;seekMilliseconds=0");
                 }
             }
 
+            private bool CanDrivePlayback() => _hasFocus && Application.isFocused && !_applicationPaused;
+
+            private void ResumeMappedScene(string reason)
+            {
+                if (!CanDrivePlayback() || !_playbackSuspended) return;
+                _playbackSuspended = false;
+                if (string.IsNullOrWhiteSpace(_activeSceneAction)) return;
+                _edi?.Play(_activeSceneAction);
+                Emit("SCRIPT_PLAY", SceneManager.GetActiveScene().name, string.Empty, _activeSceneAction,
+                    $"source=scene;reason={reason};seekMilliseconds=0");
+            }
+
+            private void ScanRuntimeObjects()
+            {
+                RunObserverStep("animator-scan", ScanAnimators);
+                var playMakerCount = 0;
+        {{playMakerScanStatement}}        var summary = $"animators={_animators.Count};playMakerAvailable={{hasPlayMaker.ToString().ToLowerInvariant()}};playMakerFsms={playMakerCount}";
+                if (summary == _lastScanSummary) return;
+                _lastScanSummary = summary;
+                Emit("OBSERVER_SCAN", SceneManager.GetActiveScene().name, string.Empty, summary, string.Empty);
+            }
+
             private void ScanAnimators()
             {
-                foreach (var animator in Resources.FindObjectsOfTypeAll<Animator>())
+                foreach (var animator in UnityEngine.Object.FindObjectsOfType<Animator>())
                 {
                     try
                     {
@@ -575,7 +708,7 @@ public sealed class UnityModScaffolder
                             !animator.isActiveAndEnabled || !animator.gameObject.activeInHierarchy) continue;
                         _animators[animator.GetInstanceID()] = animator;
                     }
-                    catch (Exception) { }
+                    catch (Exception exception) { ReportObserverError("animator-scan-item", exception); }
                 }
             }
 
@@ -583,15 +716,13 @@ public sealed class UnityModScaffolder
             {
                 foreach (var id in _animators.Keys.ToArray())
                 {
-                    var animator = _animators[id];
-                    if (animator == null)
-                    {
-                        RemoveTrackedAnimator(id, "animator-destroyed", string.Empty, string.Empty);
-                        continue;
-                    }
-
                     try
                     {
+                        if (!_animators.TryGetValue(id, out var animator) || animator == null)
+                        {
+                            RemoveTrackedAnimator(id, "animator-destroyed", string.Empty, string.Empty);
+                            continue;
+                        }
                         var sceneName = animator.gameObject.scene.name;
                         var objectPath = BuildPath(animator.transform);
                         if (!animator.isActiveAndEnabled || !animator.gameObject.activeInHierarchy)
@@ -603,7 +734,7 @@ public sealed class UnityModScaffolder
                     }
                     catch (Exception exception)
                     {
-                        _log?.Invoke($"Animator observation failed: {exception.Message}");
+                        ReportObserverError("animator-poll-item", exception);
                         RemoveTrackedAnimator(id, "animator-failed", string.Empty, string.Empty);
                     }
                 }
@@ -632,15 +763,21 @@ public sealed class UnityModScaffolder
                 var clipLength = dominantClip != null ? dominantClip.length : 0f;
                 var stateLength = Math.Max(0f, state.length);
                 var animatorSpeed = animator.speed;
-                var cycleDuration = (stateLength > 0f ? stateLength : clipLength) /
-                                    Math.Max(0.001f, Math.Abs(animatorSpeed));
+                var effectiveSpeed = Math.Abs(animatorSpeed * state.speed * state.speedMultiplier);
+                var cycleDuration = stateLength > 0f
+                    ? stateLength
+                    : clipLength / Math.Max(0.001f, effectiveSpeed);
                 var isLooping = state.loop || dominantClip != null && dominantClip.isLooping;
                 var normalizedTime = Math.Max(0f, state.normalizedTime);
                 var loopIndex = (int)Math.Floor(normalizedTime);
                 var phase = normalizedTime - loopIndex;
                 var phaseSeconds = cycleDuration * phase;
                 var seekMilliseconds = Math.Max(0, (int)Math.Round(phaseSeconds * 1000));
-                var mapped = GamePreset.TryMatchAnimation(clipName, out var mappedAction);
+                var cycleDurationMilliseconds = cycleDuration > 0f
+                    ? Math.Max(1, (int)Math.Round(cycleDuration * 1000))
+                    : 0;
+                var mapped = GamePreset.TryMatchAnimation(
+                    clipName, objectPath, cycleDurationMilliseconds, out var mappedAction);
                 var details = TimingDetails(layer, state, clipLength, cycleDuration, isLooping, loopIndex,
                     phaseSeconds, animatorSpeed, mapped ? mappedAction : string.Empty);
 
@@ -652,6 +789,17 @@ public sealed class UnityModScaffolder
                     var progressed = Math.Abs(normalizedTime - previous.LastNormalizedTime) > 0.0001f;
                     previous.LastNormalizedTime = normalizedTime;
                     if (progressed) previous.LastProgressAt = observedAt;
+                    var currentMappedAction = mapped ? mappedAction : string.Empty;
+                    if (!previous.MappedAction.Equals(currentMappedAction, StringComparison.OrdinalIgnoreCase))
+                    {
+                        previous.MappedAction = currentMappedAction;
+                        previous.StoppedForInactivity = false;
+                        Emit("ANIMATOR_VARIANT", sceneName, objectPath, clipName, details);
+                        if (mapped && !previous.Completed && (isLooping || normalizedTime < 1f))
+                            StartMappedAnimation(key, mappedAction, seekMilliseconds, sceneName, objectPath, "timing-variant");
+                        else
+                            StopMappedAnimation(key, "timing-variant-exit", sceneName, objectPath);
+                    }
                     if (previous.StoppedForInactivity)
                     {
                         if (!progressed) return;
@@ -674,8 +822,11 @@ public sealed class UnityModScaffolder
                     if (isLooping && loopIndex > previous.LoopIndex)
                     {
                         previous.LoopIndex = loopIndex;
-                        Emit("ANIMATOR_LOOP", sceneName, objectPath, clipName, details);
-                        if (mapped) StartMappedAnimation(key, mappedAction, seekMilliseconds, sceneName, objectPath, "loop");
+                        if (observedAt - previous.LastLoopTelemetryAt >= 1f)
+                        {
+                            previous.LastLoopTelemetryAt = observedAt;
+                            Emit("ANIMATOR_LOOP", sceneName, objectPath, clipName, details);
+                        }
                         return;
                     }
                     if (restarted)
@@ -696,27 +847,38 @@ public sealed class UnityModScaffolder
                 }
 
                 var hadMappedAction = _activeAnimatorActions.ContainsKey(key);
-                if (hadMappedAction) _activeAnimatorActions.Remove(key);
                 var completed = !isLooping && normalizedTime >= 1f;
                 _states[key] = new StateSnapshot(state.fullPathHash, clipName, normalizedTime, loopIndex, completed,
-                    Time.unscaledTime);
+                    Time.unscaledTime, mapped ? mappedAction : string.Empty);
                 Emit("ANIMATOR", sceneName, objectPath, clipName, details);
                 if (mapped && !completed)
                 {
                     StartMappedAnimation(key, mappedAction, seekMilliseconds, sceneName, objectPath, "state-enter");
                 }
-                else if (hadMappedAction && _activeAnimatorActions.Count == 0 && string.IsNullOrWhiteSpace(_activeSceneAction))
+                else if (hadMappedAction)
                 {
-                    _edi?.Stop();
-                    Emit("SCRIPT_STOP", sceneName, objectPath, clipName, "reason=state-exit");
+                    StopMappedAnimation(key, "state-exit", sceneName, objectPath);
                 }
             }
 
             private void StartMappedAnimation(string key, string action, int seekMilliseconds, string scene,
                 string objectPath, string reason)
             {
-                _activeSceneAction = string.Empty;
+                if (GamePreset.IsReaction(action))
+                {
+                    foreach (var reactionKey in _activeAnimatorActions
+                                 .Where(pair => GamePreset.IsReaction(pair.Value))
+                                 .Select(pair => pair.Key)
+                                 .ToArray())
+                        _activeAnimatorActions.Remove(reactionKey);
+                }
+                else
+                {
+                    _activeSceneAction = string.Empty;
+                    _activeAnimatorActions.Clear();
+                }
                 _activeAnimatorActions[key] = action;
+                _currentRuntimeActionKey = key;
                 _log?.Invoke($"Animation preset matched -> '{action}' ({reason}, seek {seekMilliseconds} ms).");
                 _edi?.Play(action, seekMilliseconds);
                 Emit("SCRIPT_PLAY", scene, objectPath, action,
@@ -725,17 +887,38 @@ public sealed class UnityModScaffolder
 
             private void StopMappedAnimation(string key, string reason, string scene, string objectPath)
             {
-                if (!_activeAnimatorActions.Remove(key)) return;
-                if (_activeAnimatorActions.Count == 0 && string.IsNullOrWhiteSpace(_activeSceneAction)) _edi?.Stop();
+                if (!_activeAnimatorActions.TryGetValue(key, out var action)) return;
+                _activeAnimatorActions.Remove(key);
+                if (_currentRuntimeActionKey == key)
+                    StopCurrentRuntimeAction(action);
                 Emit("SCRIPT_STOP", scene, objectPath, string.Empty, $"reason={reason}");
+            }
+
+            private void StopCurrentRuntimeAction(string action)
+            {
+                if (GamePreset.IsReaction(action))
+                {
+                    _currentRuntimeActionKey = _activeAnimatorActions
+                        .FirstOrDefault(pair => !GamePreset.IsReaction(pair.Value)).Key ?? string.Empty;
+                    var hasTrackedPrimary = !string.IsNullOrWhiteSpace(_currentRuntimeActionKey) ||
+                                            !string.IsNullOrWhiteSpace(_activeSceneAction);
+                    _edi?.Stop(stopUnderlying: !hasTrackedPrimary);
+                    return;
+                }
+                _currentRuntimeActionKey = string.Empty;
+                if (string.IsNullOrWhiteSpace(_activeSceneAction)) _edi?.Stop();
             }
 
             private void RemoveAnimatorMappings(string keyPrefix, string reason, string scene, string objectPath)
             {
                 var keys = _activeAnimatorActions.Keys.Where(key => key.StartsWith(keyPrefix, StringComparison.Ordinal)).ToArray();
+                var stoppedCurrent = keys.Contains(_currentRuntimeActionKey);
+                var currentAction = stoppedCurrent && _activeAnimatorActions.TryGetValue(_currentRuntimeActionKey, out var action)
+                    ? action
+                    : string.Empty;
                 foreach (var key in keys) _activeAnimatorActions.Remove(key);
-                if (keys.Length > 0 && _activeAnimatorActions.Count == 0 && string.IsNullOrWhiteSpace(_activeSceneAction))
-                    _edi?.Stop();
+                if (stoppedCurrent)
+                    StopCurrentRuntimeAction(currentAction);
                 if (keys.Length > 0) Emit("SCRIPT_STOP", scene, objectPath, string.Empty, $"reason={reason}");
             }
 
@@ -748,16 +931,50 @@ public sealed class UnityModScaffolder
                 RemoveAnimatorMappings(keyPrefix, reason, scene, objectPath);
             }
 
-            private void StopAllMappedPlayback(string reason)
+        {{playMakerMethods}}
+
+            private void StopRuntimeMappings(string reason)
             {
-                if (_activeAnimatorActions.Count == 0 && string.IsNullOrWhiteSpace(_activeSceneAction)) return;
-                foreach (var key in _activeAnimatorActions.Keys)
+                if (_activeAnimatorActions.Count == 0)
                 {
-                    if (_states.TryGetValue(key, out var state)) state.StoppedForInactivity = true;
+                    _currentRuntimeActionKey = string.Empty;
+                    return;
                 }
+                var currentAction = _activeAnimatorActions.TryGetValue(_currentRuntimeActionKey, out var action)
+                    ? action
+                    : string.Empty;
+                var shouldStop = !string.IsNullOrWhiteSpace(_currentRuntimeActionKey) &&
+                                 (GamePreset.IsReaction(currentAction) || string.IsNullOrWhiteSpace(_activeSceneAction));
+                var stopUnderlying = GamePreset.IsReaction(currentAction) &&
+                                     string.IsNullOrWhiteSpace(_activeSceneAction);
                 _activeAnimatorActions.Clear();
-                _activeSceneAction = string.Empty;
-                _edi?.Stop();
+                _currentRuntimeActionKey = string.Empty;
+                if (!shouldStop) return;
+                _edi?.Stop(stopUnderlying);
+                Emit("SCRIPT_STOP", SceneManager.GetActiveScene().name, string.Empty, string.Empty, $"reason={reason}");
+            }
+
+            private void StopAllMappedPlayback(string reason, bool preserveSceneAction = false)
+            {
+                if (preserveSceneAction && _playbackSuspended) return;
+                if (_activeAnimatorActions.Count == 0 && string.IsNullOrWhiteSpace(_activeSceneAction))
+                {
+                    if (preserveSceneAction) _playbackSuspended = true;
+                    return;
+                }
+                foreach (var pair in _activeAnimatorActions)
+                {
+                    if (!GamePreset.IsReaction(pair.Value) && _states.TryGetValue(pair.Key, out var state))
+                        state.StoppedForInactivity = true;
+                }
+                var currentAction = _activeAnimatorActions.TryGetValue(_currentRuntimeActionKey, out var action)
+                    ? action
+                    : _activeSceneAction;
+        {{playMakerPlaybackResetStatement}}        _activeAnimatorActions.Clear();
+                _currentRuntimeActionKey = string.Empty;
+                if (!preserveSceneAction) _activeSceneAction = string.Empty;
+                _playbackSuspended = preserveSceneAction || !CanDrivePlayback();
+                _edi?.Stop(stopUnderlying: GamePreset.IsReaction(currentAction));
                 Emit("SCRIPT_STOP", SceneManager.GetActiveScene().name, string.Empty, string.Empty, $"reason={reason}");
             }
 
@@ -782,9 +999,12 @@ public sealed class UnityModScaffolder
 
             private void Emit(string kind, string scene, string objectPath, string candidate, string details)
             {
-                var line = string.Join("\t", DateTimeOffset.UtcNow.ToString("O"), Clean(kind), Clean(scene),
-                    Clean(objectPath), Clean(candidate), Clean(details));
-                try { _telemetry?.WriteLine(line); }
+                try
+                {
+                    var line = string.Join("\t", DateTimeOffset.UtcNow.ToString("O"), Clean(kind), Clean(scene),
+                        Clean(objectPath), Clean(candidate), Clean(details));
+                    _telemetry?.WriteLine(line);
+                }
                 catch (Exception exception) { _log?.Invoke($"Telemetry write failed: {exception.Message}"); }
             }
 
@@ -800,12 +1020,13 @@ public sealed class UnityModScaffolder
                 return string.Join("/", names.ToArray());
             }
 
-            private static string Clean(string value) => value.Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ');
+            private static string Clean(string? value) =>
+                (value ?? string.Empty).Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ');
 
             private sealed class StateSnapshot
             {
                 public StateSnapshot(int stateHash, string clipName, float normalizedTime, int loopIndex, bool completed,
-                    float observedAt)
+                    float observedAt, string mappedAction)
                 {
                     StateHash = stateHash;
                     ClipName = clipName;
@@ -813,6 +1034,8 @@ public sealed class UnityModScaffolder
                     LoopIndex = loopIndex;
                     Completed = completed;
                     LastProgressAt = observedAt;
+                    LastLoopTelemetryAt = observedAt;
+                    MappedAction = mappedAction;
                 }
 
                 public int StateHash { get; }
@@ -821,15 +1044,159 @@ public sealed class UnityModScaffolder
                 public int LoopIndex { get; set; }
                 public bool Completed { get; set; }
                 public float LastProgressAt { get; set; }
+                public float LastLoopTelemetryAt { get; set; }
+                public string MappedAction { get; set; }
                 public bool StoppedForInactivity { get; set; }
             }
         }
+        {{playMakerPatch}}
         """;
     }
+
+    private static string CreatePlayMakerObserverMethods() => """
+            private int ScanPlayMakerFsms()
+            {
+                var activeIds = new HashSet<int>();
+                foreach (var fsm in UnityEngine.Object.FindObjectsOfType<PlayMakerFSM>())
+                {
+                    try
+                    {
+                        if (fsm == null || fsm.gameObject == null || !fsm.gameObject.scene.IsValid() ||
+                            !fsm.isActiveAndEnabled || !fsm.gameObject.activeInHierarchy) continue;
+                        var id = fsm.GetInstanceID();
+                        activeIds.Add(id);
+                        _playMakerFsms[id] = fsm;
+                        ObservePlayMakerFsm(fsm);
+                    }
+                    catch (Exception exception) { ReportObserverError("playmaker-scan-item", exception); }
+                }
+                foreach (var id in _playMakerFsms.Keys.Where(id => !activeIds.Contains(id)).ToArray())
+                    RemoveTrackedPlayMakerFsm(id, "fsm-missing", string.Empty, string.Empty);
+                return activeIds.Count;
+            }
+
+            internal static void ObservePatchedPlayMakerState(HutongGames.PlayMaker.Fsm fsm)
+            {
+                var observer = _instance;
+                if (observer is null) return;
+                try
+                {
+                    var component = fsm.FsmComponent;
+                    if (component != null) observer.ObservePlayMakerFsm(component);
+                }
+                catch (Exception exception) { observer.ReportObserverError("playmaker-state-patch", exception); }
+            }
+
+            private void ObservePlayMakerFsm(PlayMakerFSM fsm)
+            {
+                var id = fsm.GetInstanceID();
+                _playMakerFsms[id] = fsm;
+                var sceneName = fsm.gameObject.scene.name;
+                var objectPath = BuildPath(fsm.transform);
+                if (!fsm.isActiveAndEnabled || !fsm.gameObject.activeInHierarchy)
+                {
+                    RemoveTrackedPlayMakerFsm(id, "fsm-inactive", sceneName, objectPath);
+                    return;
+                }
+
+                var stateName = fsm.ActiveStateName ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(stateName))
+                {
+                    EndPlayMakerState(id, "state-empty", sceneName, objectPath);
+                    return;
+                }
+                var fsmName = fsm.FsmName ?? string.Empty;
+                var candidate = string.IsNullOrWhiteSpace(fsmName) ? stateName : fsmName + " / " + stateName;
+                _playMakerStates.TryGetValue(id, out var previousState);
+                var previousCandidate = previousState?.Candidate ?? string.Empty;
+                if (candidate == previousCandidate && previousState?.NeedsResume != true) return;
+
+                var key = "fsm:" + id + ":";
+                var hadMappedAction = _activeAnimatorActions.ContainsKey(key);
+                var snapshot = new FsmSnapshot(candidate, sceneName, objectPath);
+                _playMakerStates[id] = snapshot;
+                var mapped = GamePreset.TryMatchAnimation(candidate, objectPath, 0, out var mappedAction);
+                Emit("FSM_STATE", sceneName, objectPath, candidate, string.Join(";",
+                    $"stream={id}", $"fsm={fsmName}", $"state={stateName}",
+                    $"previous={previousCandidate}",
+                    $"mappedAction={(mapped ? mappedAction : string.Empty)}"));
+                if (mapped && CanDrivePlayback())
+                {
+                    StartMappedAnimation(key, mappedAction, 0, sceneName, objectPath, "fsm-state-enter");
+                }
+                else if (mapped)
+                {
+                    snapshot.NeedsResume = true;
+                }
+                else if (hadMappedAction)
+                {
+                    StopMappedAnimation(key, "fsm-state-exit", sceneName, objectPath);
+                }
+            }
+
+            private void EndPlayMakerState(int id, string reason, string scene, string objectPath)
+            {
+                if (!_playMakerStates.TryGetValue(id, out var previousState)) return;
+                _playMakerStates.Remove(id);
+                var key = "fsm:" + id + ":";
+                var exitScene = string.IsNullOrWhiteSpace(scene) ? previousState.Scene : scene;
+                var exitObjectPath = string.IsNullOrWhiteSpace(objectPath) ? previousState.ObjectPath : objectPath;
+                StopMappedAnimation(key, reason, exitScene, exitObjectPath);
+                Emit("FSM_EXIT", exitScene, exitObjectPath, previousState.Candidate, $"stream={id};reason={reason}");
+            }
+
+            private void RemoveTrackedPlayMakerFsm(int id, string reason, string scene, string objectPath)
+            {
+                EndPlayMakerState(id, reason, scene, objectPath);
+                _playMakerFsms.Remove(id);
+            }
+
+            private void PreparePlayMakerResume(IEnumerable<KeyValuePair<string, string>> actions)
+            {
+                const string prefix = "fsm:";
+                foreach (var pair in actions)
+                {
+                    if (GamePreset.IsReaction(pair.Value) ||
+                        !pair.Key.StartsWith(prefix, StringComparison.Ordinal)) continue;
+                    var idText = pair.Key.Substring(prefix.Length).TrimEnd(':');
+                    if (int.TryParse(idText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id) &&
+                        _playMakerStates.TryGetValue(id, out var state)) state.NeedsResume = true;
+                }
+            }
+
+            private sealed class FsmSnapshot
+            {
+                public FsmSnapshot(string candidate, string scene, string objectPath)
+                {
+                    Candidate = candidate;
+                    Scene = scene;
+                    ObjectPath = objectPath;
+                }
+
+                public string Candidate { get; }
+                public string Scene { get; }
+                public string ObjectPath { get; }
+                public bool NeedsResume { get; set; }
+            }
+
+        """;
+
+    private static string CreatePlayMakerPatch() => """
+
+        [HarmonyPatch(typeof(HutongGames.PlayMaker.Fsm), nameof(HutongGames.PlayMaker.Fsm.SwitchState),
+            new[] { typeof(HutongGames.PlayMaker.FsmState) })]
+        internal static class PlayMakerStatePatch
+        {
+            [HarmonyPostfix]
+            private static void AfterSwitchState(HutongGames.PlayMaker.Fsm __instance) =>
+                RuntimeObserver.ObservePatchedPlayMakerState(__instance);
+        }
+        """;
 
     private static string CreateGamePreset(StudioProject project, string pluginGuid, UnityModPresetKind preset)
     {
         var conventionEntries = new StringBuilder();
+        var reactionEntries = new StringBuilder();
         foreach (var action in project.Actions)
         {
             conventionEntries.Append("        [")
@@ -837,15 +1204,21 @@ public sealed class UnityModScaffolder
                 .Append("] = ActionNames.")
                 .Append(ToIdentifier(action.Name))
                 .AppendLine(",");
+            if (action.Type == EdiGalleryType.Reaction)
+                reactionEntries.Append("        ActionNames.")
+                    .Append(ToIdentifier(action.Name))
+                    .AppendLine(",");
         }
         var actions = project.Actions.ToDictionary(action => action.Name, StringComparer.OrdinalIgnoreCase);
         var mappings = project.Game.TriggerMappings
             .Where(mapping => !string.IsNullOrWhiteSpace(mapping.Candidate) && actions.ContainsKey(mapping.ActionName))
-            .GroupBy(mapping => $"{mapping.Kind}:{NormalizeMatchName(mapping.Candidate)}", StringComparer.OrdinalIgnoreCase)
+            .GroupBy(mapping => $"{mapping.Kind}:{NormalizeMatchName(mapping.Candidate)}:{mapping.ObjectPath}:" +
+                                mapping.CycleDurationMilliseconds, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.Last())
             .ToArray();
         var sceneEntries = CreateMappingEntries(mappings.Where(mapping => mapping.Kind == UnityTriggerKind.Scene), actions);
-        var animationEntries = CreateMappingEntries(mappings.Where(mapping => mapping.Kind == UnityTriggerKind.AnimationClip), actions);
+        var animationEntries = CreateAnimationMappingEntries(
+            mappings.Where(mapping => mapping.Kind == UnityTriggerKind.AnimationClip), actions);
         var matchScenes = preset is UnityModPresetKind.SceneNames or UnityModPresetKind.SceneAndAnimationNames;
         var matchAnimations = preset is UnityModPresetKind.AnimationNames or UnityModPresetKind.SceneAndAnimationNames;
         return $$"""
@@ -860,11 +1233,15 @@ public sealed class UnityModScaffolder
             {
         {{conventionEntries.ToString().TrimEnd()}}
             };
+            private static readonly HashSet<string> ReactionActions = new(StringComparer.OrdinalIgnoreCase)
+            {
+        {{reactionEntries.ToString().TrimEnd()}}
+            };
             private static readonly Dictionary<string, string> SceneMappings = new(StringComparer.OrdinalIgnoreCase)
             {
         {{sceneEntries}}
             };
-            private static readonly Dictionary<string, string> AnimationMappings = new(StringComparer.OrdinalIgnoreCase)
+            private static readonly AnimationMapping[] AnimationMappings =
             {
         {{animationEntries}}
             };
@@ -872,8 +1249,53 @@ public sealed class UnityModScaffolder
             public static bool TryMatchScene(string sceneName, out string action) =>
                 TryMatch(SceneMappings, MatchScenes, sceneName, out action);
 
-            public static bool TryMatchAnimation(string clipName, out string action) =>
-                TryMatch(AnimationMappings, MatchAnimations, clipName, out action);
+            public static bool IsReaction(string action) => ReactionActions.Contains(action);
+
+            public static bool TryMatchAnimation(string clipName, string objectPath, int cycleDurationMilliseconds,
+                out string action)
+            {
+                var normalized = Normalize(clipName);
+                AnimationMapping? best = null;
+                var bestPathSpecificity = -1;
+                var bestTimingSpecificity = -1;
+                var bestDifference = int.MaxValue;
+                foreach (var mapping in AnimationMappings)
+                {
+                    if (!mapping.Candidate.Equals(normalized, StringComparison.OrdinalIgnoreCase)) continue;
+                    var pathSpecificity = string.IsNullOrWhiteSpace(mapping.ObjectPath) ? 0 : 1;
+                    if (pathSpecificity > 0 &&
+                        !mapping.ObjectPath.Equals(objectPath, StringComparison.OrdinalIgnoreCase)) continue;
+                    var timingSpecificity = mapping.CycleDurationMilliseconds > 0 ? 1 : 0;
+                    var difference = int.MaxValue;
+                    if (timingSpecificity > 0)
+                    {
+                        if (cycleDurationMilliseconds <= 0) continue;
+                        difference = Math.Abs(mapping.CycleDurationMilliseconds - cycleDurationMilliseconds);
+                        var tolerance = Math.Max(25, mapping.CycleDurationMilliseconds / 10);
+                        if (difference > tolerance) continue;
+                    }
+                    if (best is not null && (pathSpecificity < bestPathSpecificity ||
+                        pathSpecificity == bestPathSpecificity && timingSpecificity < bestTimingSpecificity ||
+                        pathSpecificity == bestPathSpecificity && timingSpecificity == bestTimingSpecificity &&
+                        difference >= bestDifference)) continue;
+                    best = mapping;
+                    bestPathSpecificity = pathSpecificity;
+                    bestTimingSpecificity = timingSpecificity;
+                    bestDifference = difference;
+                }
+                if (best is not null)
+                {
+                    action = best.Action;
+                    return true;
+                }
+                if (MatchAnimations && ConventionActions.TryGetValue(normalized, out var matched))
+                {
+                    action = matched;
+                    return true;
+                }
+                action = string.Empty;
+                return false;
+            }
 
             private static bool TryMatch(Dictionary<string, string> explicitMappings, bool conventionEnabled,
                 string candidate, out string action)
@@ -902,6 +1324,22 @@ public sealed class UnityModScaffolder
                 }
                 return builder.ToString();
             }
+
+            private sealed class AnimationMapping
+            {
+                public AnimationMapping(string candidate, string objectPath, int cycleDurationMilliseconds, string action)
+                {
+                    Candidate = candidate;
+                    ObjectPath = objectPath;
+                    CycleDurationMilliseconds = cycleDurationMilliseconds;
+                    Action = action;
+                }
+
+                public string Candidate { get; }
+                public string ObjectPath { get; }
+                public int CycleDurationMilliseconds { get; }
+                public string Action { get; }
+            }
         }
         """;
     }
@@ -922,6 +1360,25 @@ public sealed class UnityModScaffolder
         return builder.ToString().TrimEnd();
     }
 
+    private static string CreateAnimationMappingEntries(
+        IEnumerable<UnityTriggerMapping> mappings,
+        IReadOnlyDictionary<string, AuthoredAction> actions)
+    {
+        var builder = new StringBuilder();
+        foreach (var mapping in mappings
+                     .OrderByDescending(mapping => mapping.CycleDurationMilliseconds.HasValue)
+                     .ThenByDescending(mapping => !string.IsNullOrWhiteSpace(mapping.ObjectPath)))
+        {
+            builder.Append("        new AnimationMapping(")
+                .Append(CSharpLiteral(NormalizeMatchName(mapping.Candidate))).Append(", ")
+                .Append(CSharpLiteral(mapping.ObjectPath.Trim())).Append(", ")
+                .Append(mapping.CycleDurationMilliseconds ?? 0).Append(", ActionNames.")
+                .Append(ToIdentifier(actions[mapping.ActionName].Name))
+                .AppendLine("),");
+        }
+        return builder.ToString().TrimEnd();
+    }
+
     private static string CreateEdiClient() => """
     using System.Collections.Concurrent;
     using System.Net.Http;
@@ -932,9 +1389,11 @@ public sealed class UnityModScaffolder
         private readonly ConcurrentQueue<Func<Task>> _commands = new();
         private readonly SemaphoreSlim _signal = new(0);
         private readonly CancellationTokenSource _shutdown = new();
+        private readonly object _enqueueGate = new();
         private readonly string _baseUrl;
         private readonly Action<string> _log;
         private readonly Task _worker;
+        private long _playbackRevision;
         private int _wakePending;
 
         public EdiClient(string baseUrl, Action<string> log)
@@ -944,9 +1403,32 @@ public sealed class UnityModScaffolder
             _worker = Task.Run(WorkAsync);
         }
 
-        public void Play(string name, int seekMilliseconds = 0) => Enqueue(() =>
-            PostAsync($"/Play/{Uri.EscapeDataString(name)}?seek={Math.Max(0, seekMilliseconds)}"));
-        public void Stop() => Enqueue(() => PostAsync("/Stop"), clearPending: true);
+        public void Play(string name, int seekMilliseconds = 0)
+        {
+            var route = $"/Play/{Uri.EscapeDataString(name)}?seek={Math.Max(0, seekMilliseconds)}";
+            lock (_enqueueGate)
+            {
+                var revision = Interlocked.Increment(ref _playbackRevision);
+                EnqueueCore(async () =>
+                {
+                    if (revision != Interlocked.Read(ref _playbackRevision)) return;
+                    await PostAsync(route).ConfigureAwait(false);
+                });
+            }
+        }
+
+        public void Stop(bool stopUnderlying = false)
+        {
+            lock (_enqueueGate)
+            {
+                Interlocked.Increment(ref _playbackRevision);
+                EnqueueCore(async () =>
+                {
+                    await PostAsync("/Stop").ConfigureAwait(false);
+                    if (stopUnderlying) await PostAsync("/Stop").ConfigureAwait(false);
+                });
+            }
+        }
         public void Pause() => Enqueue(() => PostAsync("/Pause?untilResume=true"));
         public void Resume() => Enqueue(() => PostAsync("/Resume?AtCurrentTime=false"));
         public void SetIntensity(int percent)
@@ -955,13 +1437,13 @@ public sealed class UnityModScaffolder
             Enqueue(() => PostAsync($"/Intensity/{clamped}"));
         }
 
-        private void Enqueue(Func<Task> command, bool clearPending = false)
+        private void Enqueue(Func<Task> command)
         {
-            if (clearPending)
-            {
-                while (_commands.TryDequeue(out _)) { }
-            }
-            while (_commands.Count >= 64 && _commands.TryDequeue(out _)) { }
+            lock (_enqueueGate) EnqueueCore(command);
+        }
+
+        private void EnqueueCore(Func<Task> command)
+        {
             _commands.Enqueue(command);
             if (Interlocked.Exchange(ref _wakePending, 1) == 0) _signal.Release();
         }
@@ -1037,11 +1519,11 @@ public sealed class UnityModScaffolder
 
         Playback hotkeys (top row or numpad): `1` pause, `2` resume, `3` intensity 40%, `4` intensity 100%.
 
-        Runtime discovery records scene changes and Animator clip/state transitions in:
+        Runtime discovery records scene changes, Animator clip/state transitions, and PlayMaker FSM states when available in:
 
         `{{telemetryFile}}`
 
-        `Discovery` records candidates and applies only explicit mappings created in the studio. The scene/animation convention presets additionally map a discovered name to an EDI action when both normalize to the same letters and digits. Use discovery first to avoid false triggers, then add game-specific Harmony patches for semantic events that scene/Animator observation cannot identify reliably.
+        `Discovery` records candidates and applies only explicit mappings created in the studio. The scene/animation convention presets additionally map a discovered name to an EDI action when both normalize to the same letters and digits. Use discovery first to avoid false triggers, then add game-specific Harmony patches for semantic events that scene, Animator, and FSM observation cannot identify reliably.
 
         Reference policy: never add the game's `mscorlib.dll`, `netstandard.dll`, `System*.dll`, or a second `UnityEngine.dll`. The generated compile-only references use `ExternallyResolved=true` so MSBuild cannot walk into Unity's incompatible framework facade set. Regenerate or update references after game/BepInEx upgrades.
         """;
