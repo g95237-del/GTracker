@@ -191,7 +191,7 @@
                         <ListBox x:Name="UnityTelemetryList" Height="180" MinHeight="120" MaxHeight="520" Margin="3" FontFamily="Consolas" FontSize="11"
                                   ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto"
                                   ScrollViewer.ScrollChanged="UnityTelemetryList_ScrollChanged"
-                                   ToolTip="Live scene, Animator, and PlayMaker FSM candidates emitted by the installed discovery plugin"/>
+                                   ToolTip="Live scene, animation, Timeline, and supported framework candidates emitted by the installed discovery plugin"/>
                         <Thumb Height="7" Margin="3,0" Cursor="SizeNS" Background="{StaticResource EdgeBrush}"
                                DragDelta="TelemetryResize_DragDelta" ToolTip="Drag to resize the telemetry watcher"/>
                         <WrapPanel Margin="0,1">
@@ -208,7 +208,7 @@
                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                                 <Button Content="Use as scene name" Click="UseTelemetryName_Click"/>
                                 <Button x:Name="CaptureTelemetryCycleButton" Content="Capture cycle" Click="CaptureTelemetryCycle_Click"
-                                        ToolTip="Create a precisely timed scene clip from the selected Animator event"/>
+                                        ToolTip="Create a precisely timed scene clip from the selected runtime playback event"/>
                                 <Button Content="Map selected" Click="MapTelemetry_Click"/>
                             </StackPanel>
                             <ComboBox x:Name="TelemetryActionCombo" DisplayMemberPath="Name"

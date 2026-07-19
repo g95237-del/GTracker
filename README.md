@@ -22,7 +22,7 @@ The repository and project names remain `GTracker` temporarily; the running appl
 - Detects Unity Mono versus IL2CPP, the managed target framework, modular versus monolithic Unity references, BepInEx flavor, and IL2CPP interop readiness.
 - Installs the packaged recommended BepInEx 6 x64 Mono or IL2CPP build, launches the selected game until first-run initialization completes, and then closes it.
 - Installs a selected fresh EDI instance beside the game while deliberately preserving all destination `Gallery` contents.
-- Generates BepInEx Mono or IL2CPP plugins with scene, Animator, and conditional PlayMaker FSM discovery, configurable matching presets, scene constants, and an ordered EDI HTTP client.
+- Generates BepInEx Mono or IL2CPP plugins with scene, Animator, Legacy Animation, Timeline, conditional PlayMaker, and Mono Spine discovery, configurable matching presets, scene constants, and an ordered EDI HTTP client.
 - Builds and installs only the final owned plugin DLL, then watches structured runtime discovery telemetry inside the studio.
 - Refuses to regenerate over an existing mod scaffold, protecting hand-written Harmony patches.
 
@@ -52,7 +52,7 @@ dotnet run --project src\GTracker.App\GTracker.App.csproj --configuration Releas
 3. Play through the game normally. The encoded pre-roll exists only in memory.
 4. When a useful scene occurs, press `Ctrl+Shift+F8`. The studio retains the configured pre-roll and waits for the configured post-roll.
 5. Scrub or loop the captured scene. Use **Mark in**, **Mark out**, and **Apply trim** to isolate it.
-6. When runtime discovery is active, the studio correlates the trimmed clip's UTC interval with Unity scene, Animator, and PlayMaker FSM telemetry. A single runtime candidate names the scene and script automatically; ambiguous candidates remain selectable rather than guessed.
+6. When runtime discovery is active, the studio correlates the trimmed clip's UTC interval with Unity scene, Animator, Legacy Animation, PlayableDirector/Timeline, Spine, and supported framework telemetry. A single runtime candidate names the scene and script automatically; ambiguous candidates remain selectable rather than guessed.
 7. Confirm the derived scene name and safe script file stem, or use **Use detected name**. Choose `gallery`, `reaction`, or `filler`, loop behavior, variant, and axis.
 8. Left-click empty timeline space to add one point, then keep dragging to position that same point. Drag an existing point to move it or right-click near one to remove it.
 9. Use the linear simulator over the video to inspect the interpolated script value. Drag its body to move it, its side/corner handles to resize it, and the round handle to rotate it.
@@ -122,13 +122,13 @@ attack,attack,0,2000,gallery,true,
 4. Optionally click **Install EDI**, select a fresh folder containing `Edi.exe`, and confirm the merge into the game folder. Source `Gallery` files are skipped and an existing destination `Gallery` is left untouched.
 5. Click **Generate mod project** and choose an empty folder.
 6. Close the game and click **Build + install**. The studio runs `dotnet build`, verifies the output, and installs only `IntegrationMod.dll` under `BepInEx\plugins\<plugin-guid>`.
-7. Launch the game and click **Watch discovery** to inspect scene names, Animator clips, PlayMaker FSM states when available, object paths, and transitions in real time. `OBSERVER_SCAN` rows show how many supported runtime objects were found, while `OBSERVER_ERROR` identifies a failed probe.
-8. Select a discovered scene, Animator clip, or PlayMaker FSM state, select a saved authored scene, and click **Map selected**. Click **Build + install** again to compile that explicit project preset into the plugin; hand-written `Plugin.cs` patches are preserved.
+7. Launch the game and click **Watch discovery** to inspect scene names, Animator and Legacy Animation clips, PlayableDirector/Timeline assets, Mono Spine tracks, PlayMaker FSM states when available, object paths, and transitions in real time. `CAPABILITY` rows report detected framework evidence without becoming mapping candidates, `OBSERVER_SCAN` rows show supported runtime objects, and `OBSERVER_ERROR` identifies a failed probe.
+8. Select a discovered scene or supported runtime candidate, select a saved authored scene, and click **Map selected**. Click **Build + install** again to compile that explicit project preset into the plugin; hand-written `Plugin.cs` patches are preserved.
 9. If names already correspond to authored scene names, the convention presets can map them without individual entries. Use a narrow game-specific Harmony patch when public scene, Animator, or FSM events are not semantically sufficient.
 
 `Discovery` never triggers EDI automatically unless the project contains an explicit **Map selected** entry. `SceneNames`, `AnimationNames`, and `SceneAndAnimationNames` additionally normalize names to letters and digits and require an exact authored-scene-name match before calling EDI. This avoids substring guesses while still handling names such as `enemy-hit`, `Enemy Hit`, and `enemy_hit` consistently.
 
-The observer can discover loaded scenes, public `Animator` activity, and PlayMaker FSM state transitions when `PlayMaker.dll` is present, but it cannot infer arbitrary semantic meanings such as attack, damage, orgasm, or interaction from unknown names. Games using Playables, procedural transforms, custom native animation, stripped IL2CPP methods, or obfuscation still need a game-specific adapter. The generated Harmony setup is intentionally available for that step.
+The observer can discover loaded scenes, public `Animator` and Legacy `Animation` activity, `PlayableDirector` assets, Mono Spine tracks, and PlayMaker FSM state transitions when available, but it cannot infer arbitrary semantic meanings such as attack, damage, orgasm, or interaction from unknown names. Known frameworks without a validated adapter are reported as detected-only capabilities. Procedural transforms, custom native animation, stripped IL2CPP methods, and obfuscation still need a game-specific adapter. See `docs/UNITY_FRAMEWORK_RESEARCH.md` for the support matrix and rationale.
 
 ### Existing Broken Scaffolds
 
@@ -172,3 +172,4 @@ Generate a fresh project with the current studio. If preserving an edited old pr
 - `src/GTracker.App/Edi`: local EDI API test client.
 - `tests`: exporter, validation, persistence, Unity tooling, buffer, and clip tests.
 - `docs/EDI_RESEARCH.md`: researched EDI behavior, documentation drift, integration patterns, and primary sources.
+- `docs/UNITY_FRAMEWORK_RESEARCH.md`: Unity animation/event framework detection, observer priorities, and source references.

@@ -27,6 +27,7 @@ public sealed record UnityInspectionResult(
     public bool IsModularUnity { get; init; }
     public bool InteropReady { get; init; }
     public bool IsBuildReady { get; init; }
+    public IReadOnlyList<UnityFrameworkCapability> Frameworks { get; init; } = [];
 }
 
 public sealed class UnityGameInspector
@@ -56,7 +57,9 @@ public sealed class UnityGameInspector
         var runtime = il2Cpp ? UnityRuntimeKind.Il2Cpp : mono ? UnityRuntimeKind.Mono : UnityRuntimeKind.Unknown;
         var architecture = ReadArchitecture(executablePath);
         var unityVersion = ReadUnityVersion(directory);
-        var targetFramework = runtime == UnityRuntimeKind.Il2Cpp ? "net6.0" : DetectMonoTargetFramework(managedDirectory, findings);
+        var targetFramework = runtime == UnityRuntimeKind.Il2Cpp
+            ? "net6.0"
+            : DetectMonoTargetFramework(managedDirectory, unityVersion, findings);
         var modularUnity = File.Exists(Path.Combine(managedDirectory, "UnityEngine.CoreModule.dll"));
         var unityEngineFacade = File.Exists(Path.Combine(managedDirectory, "UnityEngine.dll"));
         var animationModule = File.Exists(Path.Combine(managedDirectory, "UnityEngine.AnimationModule.dll"));
@@ -97,7 +100,7 @@ public sealed class UnityGameInspector
         if (runtime == UnityRuntimeKind.Mono && unityEngineFacade && modularUnity)
             findings.Add("Hybrid Unity reference layout detected; the build must reference UnityEngine.dll plus only the modules present on disk.");
 
-        return new(executablePath, runtime, architecture, dataDirectory, findings)
+        var result = new UnityInspectionResult(executablePath, runtime, architecture, dataDirectory, findings)
         {
             UnityVersion = unityVersion,
             RecommendedTargetFramework = targetFramework,
@@ -106,15 +109,26 @@ public sealed class UnityGameInspector
             InteropReady = interopReady,
             IsBuildReady = engineReady && loaderReady && targetFramework != "net35"
         };
+        var frameworks = UnityFrameworkCatalog.Detect(result);
+        foreach (var framework in frameworks)
+        {
+            var support = framework.HasRuntimeObserver ? "runtime observer available" : "detected; adapter pending";
+            findings.Add($"Framework: {framework.DisplayName} ({support}; evidence: {framework.Evidence}).");
+        }
+        return result with { Frameworks = frameworks };
     }
 
-    private static string DetectMonoTargetFramework(string managedDirectory, List<string> findings)
+    private static string DetectMonoTargetFramework(
+        string managedDirectory,
+        string unityVersion,
+        List<string> findings)
     {
         var netstandard = Path.Combine(managedDirectory, "netstandard.dll");
         if (File.Exists(netstandard))
         {
             var version = ReadAssemblyVersion(netstandard);
-            if (version is { Major: >= 2, Minor: >= 1 }) return "netstandard2.1";
+            if (version is not null && version >= new Version(2, 1) && SupportsNetStandard21(unityVersion))
+                return "netstandard2.1";
             return "netstandard2.0";
         }
 
@@ -124,6 +138,13 @@ public sealed class UnityGameInspector
         if (File.Exists(mscorlib))
             findings.Add("Legacy Unity Mono profile detected. The generated HTTP client requires a .NET 4.x-compatible profile.");
         return File.Exists(mscorlib) ? "net35" : "netstandard2.0";
+    }
+
+    private static bool SupportsNetStandard21(string unityVersion)
+    {
+        var parts = unityVersion.Split('.');
+        return parts.Length >= 2 && int.TryParse(parts[0], out var major) && int.TryParse(parts[1], out var minor) &&
+               (major > 2021 || major == 2021 && minor >= 2);
     }
 
     private static BepInExFlavor DetectBepInEx(string gameRoot)

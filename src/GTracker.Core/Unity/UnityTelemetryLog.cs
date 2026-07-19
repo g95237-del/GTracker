@@ -31,9 +31,25 @@ public sealed record UnityAnimatorTiming(
 
 public static class UnityTelemetryLog
 {
-    public static bool IsAnimatorEvent(string kind) =>
+    public static bool IsRuntimeCandidateEvent(string kind) =>
         kind is "ANIMATOR" or "ANIMATOR_LOOP" or "ANIMATOR_RESTART" or "ANIMATOR_RESUME" or
-            "ANIMATOR_STALLED" or "ANIMATOR_END" or "ANIMATOR_VARIANT" or "FSM_STATE";
+            "ANIMATOR_STALLED" or "ANIMATOR_END" or "ANIMATOR_VARIANT" or "FSM_STATE" or
+            "LEGACY_ANIMATION" or "LEGACY_ANIMATION_LOOP" or "LEGACY_ANIMATION_RESUME" or
+            "LEGACY_ANIMATION_RESTART" or "LEGACY_ANIMATION_STALLED" or "LEGACY_ANIMATION_VARIANT" or
+            "TIMELINE" or "TIMELINE_LOOP" or "TIMELINE_RESUME" or "TIMELINE_RESTART" or
+            "TIMELINE_STALLED" or "TIMELINE_VARIANT" or
+            "SPINE_ANIMATION" or "SPINE_ANIMATION_LOOP" or "SPINE_ANIMATION_RESUME" or
+            "SPINE_ANIMATION_RESTART" or "SPINE_ANIMATION_STALLED" or "SPINE_ANIMATION_VARIANT";
+
+    public static bool IsTimedPlaybackEvent(string kind) =>
+        kind is "ANIMATOR" or "ANIMATOR_LOOP" or "ANIMATOR_RESTART" or "ANIMATOR_VARIANT" or
+            "LEGACY_ANIMATION" or "LEGACY_ANIMATION_LOOP" or "LEGACY_ANIMATION_RESTART" or
+            "LEGACY_ANIMATION_VARIANT" or
+            "TIMELINE" or "TIMELINE_LOOP" or "TIMELINE_RESTART" or "TIMELINE_VARIANT" or
+            "SPINE_ANIMATION" or "SPINE_ANIMATION_LOOP" or "SPINE_ANIMATION_RESTART" or
+            "SPINE_ANIMATION_VARIANT";
+
+    public static bool IsAnimatorEvent(string kind) => IsRuntimeCandidateEvent(kind);
 
     public static IReadOnlyList<UnityTelemetryEvent> Read(string path)
     {
@@ -77,18 +93,18 @@ public static class UnityTelemetryLog
             .Where(item => item.Timestamp <= clipStartUtc && item.Kind is "SCENE" or "ACTIVE_SCENE" &&
                            !string.IsNullOrWhiteSpace(item.Candidate))
             .LastOrDefault();
-        var activeFsmStates = sceneAtStart is null
+        var activeRuntimeStates = sceneAtStart is null
             ? []
             : ordered
                 .Where(item => item.Timestamp >= sceneAtStart.Timestamp && item.Timestamp <= clipStartUtc &&
-                               item.Kind is "FSM_STATE" or "FSM_EXIT")
-                .GroupBy(FsmStreamKey, StringComparer.Ordinal)
+                                IsRuntimeStreamEvent(item.Kind))
+                .GroupBy(RuntimeStreamKey, StringComparer.Ordinal)
                 .Select(group => group.Last())
-                .Where(item => item.Kind == "FSM_STATE" && !string.IsNullOrWhiteSpace(item.Candidate))
+                .Where(item => !IsRuntimeExitEvent(item.Kind) && !string.IsNullOrWhiteSpace(item.Candidate))
                 .Select(item => item.Candidate)
                 .ToArray();
-        var animations = activeFsmStates.Concat(ordered
-            .Where(item => item.Timestamp >= clipStartUtc && item.Timestamp <= clipEndUtc && IsAnimatorEvent(item.Kind) &&
+        var animations = activeRuntimeStates.Concat(ordered
+            .Where(item => item.Timestamp >= clipStartUtc && item.Timestamp <= clipEndUtc && IsRuntimeCandidateEvent(item.Kind) &&
                            !string.IsNullOrWhiteSpace(item.Candidate))
             .Select(item => item.Candidate))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -96,14 +112,16 @@ public static class UnityTelemetryLog
         return new(sceneName, animations.Length == 1 ? animations[0] : string.Empty, animations);
     }
 
-    public static bool TryGetAnimatorTiming(UnityTelemetryEvent item, out UnityAnimatorTiming timing)
+    public static bool TryGetPlaybackTiming(UnityTelemetryEvent item, out UnityAnimatorTiming timing)
     {
         timing = default!;
-        if (!IsAnimatorEvent(item.Kind) || string.IsNullOrWhiteSpace(item.Details)) return false;
-        var fields = item.Details.Split(';', StringSplitOptions.RemoveEmptyEntries)
-            .Select(field => field.Split('=', 2))
-            .Where(field => field.Length == 2)
-            .ToDictionary(field => field[0], field => field[1], StringComparer.OrdinalIgnoreCase);
+        if (!IsTimedPlaybackEvent(item.Kind) || string.IsNullOrWhiteSpace(item.Details)) return false;
+        var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var field in item.Details.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pair = field.Split('=', 2);
+            if (pair.Length == 2) fields[pair[0]] = pair[1];
+        }
         if (!TryNumber(fields, "cycleDurationSeconds", out var durationSeconds) ||
             durationSeconds <= 0 || !double.IsFinite(durationSeconds)) return false;
         TryNumber(fields, "phaseSeconds", out var phaseSeconds);
@@ -118,6 +136,9 @@ public static class UnityTelemetryLog
         return true;
     }
 
+    public static bool TryGetAnimatorTiming(UnityTelemetryEvent item, out UnityAnimatorTiming timing) =>
+        TryGetPlaybackTiming(item, out timing);
+
     private static bool TryNumber(IReadOnlyDictionary<string, string> fields, string key, out double value)
     {
         value = 0;
@@ -125,12 +146,26 @@ public static class UnityTelemetryLog
                double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
     }
 
-    private static string FsmStreamKey(UnityTelemetryEvent item)
+    private static bool IsRuntimeStreamEvent(string kind) =>
+        kind is "FSM_STATE" or "FSM_EXIT" ||
+        kind.StartsWith("LEGACY_ANIMATION", StringComparison.Ordinal) ||
+        kind.StartsWith("TIMELINE", StringComparison.Ordinal) ||
+        kind.StartsWith("SPINE_ANIMATION", StringComparison.Ordinal);
+
+    private static bool IsRuntimeExitEvent(string kind) =>
+        kind is "FSM_EXIT" or "LEGACY_ANIMATION_EXIT" or "TIMELINE_EXIT" or "SPINE_ANIMATION_EXIT";
+
+    private static string RuntimeStreamKey(UnityTelemetryEvent item)
     {
         var stream = Detail(item.Details, "stream");
-        if (!string.IsNullOrWhiteSpace(stream)) return stream;
         if (string.IsNullOrWhiteSpace(stream)) stream = Detail(item.Details, "fsm");
-        return string.Join("\0", item.Scene, item.ObjectPath, stream);
+        var source = item.Kind.StartsWith("LEGACY_ANIMATION", StringComparison.Ordinal)
+            ? "legacy"
+            : item.Kind.StartsWith("TIMELINE", StringComparison.Ordinal)
+                ? "timeline"
+                : item.Kind.StartsWith("SPINE_ANIMATION", StringComparison.Ordinal) ? "spine" : "fsm";
+        if (!string.IsNullOrWhiteSpace(stream)) return string.Join("\0", source, stream);
+        return string.Join("\0", source, item.Scene, item.ObjectPath, stream);
     }
 
     private static string Detail(string details, string key)

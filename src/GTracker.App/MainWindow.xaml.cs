@@ -1140,7 +1140,7 @@ public partial class MainWindow : Window
             return;
         }
         if (entry.Kind is "SCENE" or "ACTIVE_SCENE") _correlatedUnityScene = entry.Candidate;
-        else if (UnityTelemetryLog.IsAnimatorEvent(entry.Kind)) _correlatedUnityAnimation = entry.Candidate;
+        else if (UnityTelemetryLog.IsRuntimeCandidateEvent(entry.Kind)) _correlatedUnityAnimation = entry.Candidate;
         else
         {
             SetStatus("Only scene, animation, and FSM state entries can name an authored scene.", true);
@@ -1156,19 +1156,19 @@ public partial class MainWindow : Window
         var session = _captureSession;
         if (session is null)
         {
-            SetStatus("Start rolling capture before capturing an Animator cycle.", true);
+            SetStatus("Start rolling capture before capturing a runtime playback cycle.", true);
             return;
         }
         if (UnityTelemetryList.SelectedItem is not UnityTelemetryEntry entry ||
-            entry.Kind is not ("ANIMATOR" or "ANIMATOR_LOOP" or "ANIMATOR_RESTART" or "ANIMATOR_VARIANT") ||
+            !UnityTelemetryLog.IsTimedPlaybackEvent(entry.Kind) ||
             string.IsNullOrWhiteSpace(entry.Candidate))
         {
-            SetStatus("Select an Animator state, loop, or restart event first.", true);
+            SetStatus("Select a timed Animator, Legacy Animation, Timeline, or Spine event first.", true);
             return;
         }
         var telemetryEvent = new UnityTelemetryEvent(entry.Timestamp, entry.Kind, entry.Scene, entry.ObjectPath,
             entry.Candidate, entry.Details);
-        if (!UnityTelemetryLog.TryGetAnimatorTiming(telemetryEvent, out var timing))
+        if (!UnityTelemetryLog.TryGetPlaybackTiming(telemetryEvent, out var timing))
         {
             SetStatus("The selected event has no cycle timing. Build + install the updated mod, then capture a new event.", true);
             return;
@@ -1194,24 +1194,24 @@ public partial class MainWindow : Window
             }
             if (!ReferenceEquals(session, _captureSession) || projectGeneration != Volatile.Read(ref _projectGeneration))
             {
-                SetStatus("Capture session ended before the Animator cycle was complete.", true);
+                SetStatus("Capture session ended before the runtime playback cycle was complete.", true);
                 return;
             }
             if (session.Buffer.EarliestCapturedAtUtc is not { } earliest || earliest > startUtc.AddMilliseconds(250))
             {
-                SetStatus("The selected Animator cycle has fallen outside the rolling capture buffer.", true);
+                SetStatus("The selected runtime playback cycle has fallen outside the rolling capture buffer.", true);
                 return;
             }
             if (session.Buffer.LatestCapturedAtUtc is not { } latestCaptured || latestCaptured < endUtc)
             {
-                SetStatus("Encoded frames did not reach the end of the selected Animator cycle.", true);
+                SetStatus("Encoded frames did not reach the end of the selected runtime playback cycle.", true);
                 return;
             }
 
             var clip = session.Buffer.Snapshot(startUtc, endUtc);
             if (clip.Frames.Count == 0)
             {
-                SetStatus("No encoded frames were available for the selected Animator cycle.", true);
+                SetStatus("No encoded frames were available for the selected runtime playback cycle.", true);
                 return;
             }
 
@@ -1231,7 +1231,7 @@ public partial class MainWindow : Window
             if (IsPlaceholderSceneName(ActionNameText.Text)) ApplyRuntimeName(entry.Candidate);
             UpdateRuntimeCorrelationText();
             UpdateTriggerMappingStatus();
-            SetStatus($"Captured '{entry.Candidate}' as an exact {durationText}-second Animator cycle ({clip.Frames.Count} frames).");
+            SetStatus($"Captured '{entry.Candidate}' as an exact {durationText}-second runtime playback cycle ({clip.Frames.Count} frames).");
         }
         finally
         {
@@ -2009,7 +2009,7 @@ public partial class MainWindow : Window
         ModPresetDescriptionText.Text = ModPresetCombo.SelectedItem switch
         {
             UnityModPresetKind.SceneNames => "Watch Unity scenes and automatically play an authored scene when the normalized names match.",
-            UnityModPresetKind.AnimationNames => "Watch animation and PlayMaker FSM states and play an authored scene when normalized names match.",
+            UnityModPresetKind.AnimationNames => "Watch Animator, Legacy Animation, Timeline, and supported framework states and play an authored scene when normalized names match.",
             UnityModPresetKind.SceneAndAnimationNames => "Enable exact-name scene, animation, and FSM matching. Start with Discovery to check for false triggers first.",
             _ => "Safest preset: record scene, animation, and FSM changes without automatically triggering authored scenes."
         };
@@ -2382,7 +2382,7 @@ public partial class MainWindow : Window
             PauseTelemetryButton.IsEnabled = true;
             RefreshUnityTelemetry();
             SetStatus(File.Exists(path)
-                ? "Watching live Unity scene, Animator, and PlayMaker FSM discovery."
+                ? "Watching live Unity scene and detected-framework runtime discovery."
                 : "Discovery watch started. Launch the game to create telemetry.");
             UpdateTelemetryOutputStatus();
         }
@@ -2426,7 +2426,7 @@ public partial class MainWindow : Window
                 if (string.IsNullOrWhiteSpace(candidate) && item.Kind is "SCENE" or "ACTIVE_SCENE") candidate = item.Scene;
                 if (IsTelemetrySuppressed(item.Kind, candidate, item.ObjectPath)) continue;
                 var location = string.IsNullOrWhiteSpace(item.ObjectPath) ? item.Scene : item.ObjectPath;
-                var timingText = UnityTelemetryLog.TryGetAnimatorTiming(item, out var timing)
+                var timingText = UnityTelemetryLog.TryGetPlaybackTiming(item, out var timing)
                     ? $"  |  {timing.CycleDuration.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)}s " +
                       $"{(timing.IsLooping ? "loop" : "one-shot")} phase {timing.Phase.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)}s"
                     : string.Empty;
@@ -2587,7 +2587,7 @@ public partial class MainWindow : Window
         var kind = entry.Kind switch
         {
             "SCENE" or "ACTIVE_SCENE" => UnityTriggerKind.Scene,
-            _ when UnityTelemetryLog.IsAnimatorEvent(entry.Kind) => UnityTriggerKind.AnimationClip,
+            _ when UnityTelemetryLog.IsRuntimeCandidateEvent(entry.Kind) => UnityTriggerKind.AnimationClip,
             _ => (UnityTriggerKind?)null
         };
         if (kind is null || string.IsNullOrWhiteSpace(entry.Candidate))
@@ -2598,7 +2598,7 @@ public partial class MainWindow : Window
 
         var telemetryEvent = new UnityTelemetryEvent(entry.Timestamp, entry.Kind, entry.Scene, entry.ObjectPath,
             entry.Candidate, entry.Details);
-        var cycleDurationMilliseconds = UnityTelemetryLog.TryGetAnimatorTiming(telemetryEvent, out var timing)
+        var cycleDurationMilliseconds = UnityTelemetryLog.TryGetPlaybackTiming(telemetryEvent, out var timing)
             ? Math.Max(1, (int)Math.Round(timing.CycleDuration.TotalMilliseconds))
             : (int?)null;
         var objectPath = kind == UnityTriggerKind.AnimationClip ? entry.ObjectPath : string.Empty;

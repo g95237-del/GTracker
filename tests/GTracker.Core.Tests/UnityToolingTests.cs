@@ -134,6 +134,66 @@ public sealed class UnityToolingTests
     }
 
     [Fact]
+    public void Inspect_ReportsSupportedAndDetectedFrameworks()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            var executable = Path.Combine(directory, "FrameworkGame.exe");
+            File.Copy(Environment.ProcessPath!, executable);
+            var managed = Path.Combine(directory, "FrameworkGame_Data", "Managed");
+            Directory.CreateDirectory(managed);
+            foreach (var name in new[]
+                     {
+                         "Assembly-CSharp.dll", "UnityEngine.AnimationModule.dll", "UnityEngine.DirectorModule.dll",
+                         "Unity.VisualScripting.Flow.dll", "PlayMaker.dll", "spine-unity.dll", "spine-csharp.dll"
+                     })
+                File.WriteAllBytes(Path.Combine(managed, name), []);
+
+            var result = new UnityGameInspector().Inspect(executable);
+
+            Assert.Contains(result.Frameworks, framework =>
+                framework.Id == UnityFrameworkCatalog.LegacyAnimation && framework.HasRuntimeObserver);
+            Assert.Contains(result.Frameworks, framework =>
+                framework.Id == UnityFrameworkCatalog.Timeline && framework.HasRuntimeObserver);
+            Assert.Contains(result.Frameworks, framework =>
+                framework.Id == UnityFrameworkCatalog.PlayMaker && framework.HasRuntimeObserver);
+            Assert.Contains(result.Frameworks, framework =>
+                framework.Id == UnityFrameworkCatalog.Spine && framework.HasRuntimeObserver);
+            Assert.Contains(result.Frameworks, framework =>
+                framework.Id == "unity.visual-scripting" && !framework.HasRuntimeObserver);
+            Assert.Contains(result.Findings, finding => finding.Contains("Unity Visual Scripting"));
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void Inspect_RequiresBothSpineAssembliesForMonoObservation()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            var executable = Path.Combine(directory, "FrameworkGame.exe");
+            File.Copy(Environment.ProcessPath!, executable);
+            var managed = Path.Combine(directory, "FrameworkGame_Data", "Managed");
+            Directory.CreateDirectory(managed);
+            File.WriteAllBytes(Path.Combine(managed, "spine-unity.dll"), []);
+
+            var result = new UnityGameInspector().Inspect(executable);
+
+            Assert.Contains(result.Frameworks, framework =>
+                framework.Id == UnityFrameworkCatalog.Spine && !framework.HasRuntimeObserver);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task Scaffold_WritesRuntimeSpecificProjectAndActionConstants()
     {
         var directory = CreateTemporaryDirectory();
@@ -205,7 +265,12 @@ public sealed class UnityToolingTests
             File.WriteAllBytes(executable, []);
             var managed = Path.Combine(gameRoot, "Game_Data", "Managed");
             Directory.CreateDirectory(managed);
-            foreach (var name in new[] { "UnityEngine.dll", "UnityEngine.CoreModule.dll", "UnityEngine.AnimationModule.dll", "PlayMaker.dll" })
+            foreach (var name in new[]
+                     {
+                         "UnityEngine.dll", "UnityEngine.CoreModule.dll", "UnityEngine.AnimationModule.dll",
+                         "UnityEngine.DirectorModule.dll", "Unity.VisualScripting.Flow.dll", "PlayMaker.dll",
+                         "spine-unity.dll", "spine-csharp.dll"
+                     })
                 File.WriteAllBytes(Path.Combine(managed, name), []);
             var inspection = new UnityInspectionResult(executable, UnityRuntimeKind.Mono, "Amd64",
                 Path.Combine(gameRoot, "Game_Data"), [])
@@ -261,7 +326,10 @@ public sealed class UnityToolingTests
             var projectFile = await File.ReadAllTextAsync(Path.Combine(output, "IntegrationMod.csproj"));
             var preset = await File.ReadAllTextAsync(Path.Combine(output, "GamePreset.cs"));
             Assert.Contains("UnityEngine.AnimationModule", projectFile);
+            Assert.Contains("UnityEngine.DirectorModule", projectFile);
             Assert.Contains("<Reference Include=\"PlayMaker\"", projectFile);
+            Assert.Contains("<Reference Include=\"spine-csharp\"", projectFile);
+            Assert.Contains("<Reference Include=\"spine-unity\"", projectFile);
             Assert.DoesNotContain("UnityEngine.InputLegacyModule", projectFile);
             Assert.Contains("<Reference Include=\"UnityEngine\"", projectFile);
             Assert.DoesNotContain("UnityEngine.SceneManagementModule", projectFile);
@@ -302,6 +370,15 @@ public sealed class UnityToolingTests
             Assert.Contains("ANIMATOR_VARIANT", repairedObserver);
             Assert.Contains("ANIMATOR_STALLED", repairedObserver);
             Assert.Contains("FSM_STATE", repairedObserver);
+            Assert.Contains("LEGACY_ANIMATION", repairedObserver);
+            Assert.Contains("TIMELINE", repairedObserver);
+            Assert.Contains("Object.FindObjectsOfType<Animation>", repairedObserver);
+            Assert.Contains("Object.FindObjectsOfType<PlayableDirector>", repairedObserver);
+            Assert.Contains("Object.FindObjectsOfType<SkeletonAnimation>", repairedObserver);
+            Assert.Contains("SPINE_ANIMATION", repairedObserver);
+            Assert.Contains("state.Tracks", repairedObserver);
+            Assert.Contains("Unity Visual Scripting / Bolt", repairedObserver);
+            Assert.Contains("support=detected-only", repairedObserver);
             Assert.Contains("Object.FindObjectsOfType<PlayMakerFSM>", repairedObserver);
             Assert.DoesNotContain("Resources.FindObjectsOfTypeAll", repairedObserver);
             Assert.DoesNotContain("PollPlayMakerFsms", repairedObserver);
@@ -326,14 +403,39 @@ public sealed class UnityToolingTests
             Assert.Contains("StopAllMappedPlayback", repairedObserver);
             Assert.Contains("cycleDurationSeconds", repairedObserver);
             Assert.Contains("var cycleDuration = stateLength > 0f", repairedObserver);
-            Assert.Contains("Play(action, seekMilliseconds)", repairedObserver);
+            Assert.Contains("kind + \"_RESTART\"", repairedObserver);
+            Assert.Contains("UpdateMappedAnimation", repairedObserver);
+            Assert.Contains("ResyncMappedAnimation(key, \"loop-resync\")", repairedObserver);
+            Assert.Contains("resume-suppressed", repairedObserver);
+            Assert.Contains("resume-after-reaction", repairedObserver);
+            Assert.Contains("Play(action, seekMilliseconds, GamePreset.IsReaction(action))", repairedObserver);
             Assert.Contains("Stop(stopUnderlying: GamePreset.IsReaction(currentAction))", repairedObserver);
             Assert.Contains("GetAsyncKeyState", repairedObserver);
             Assert.DoesNotContain("Input.GetKey", repairedObserver);
             Assert.DoesNotContain("Math.Clamp", repairedObserver);
+            var mappedStart = repairedObserver.IndexOf("private void StartMappedAnimation", StringComparison.Ordinal);
+            var mappedStop = repairedObserver.IndexOf("private void StopMappedAnimation", mappedStart, StringComparison.Ordinal);
+            Assert.True(mappedStart >= 0 && mappedStop > mappedStart);
+            Assert.DoesNotContain("_activeAnimatorActions.Clear", repairedObserver[mappedStart..mappedStop]);
+            var mappedUpdate = repairedObserver.IndexOf("private void UpdateMappedAnimation", mappedStop, StringComparison.Ordinal);
+            Assert.True(mappedUpdate > mappedStop);
+            var mappedStopPolicy = repairedObserver[mappedStop..mappedUpdate];
+            Assert.Contains("if (_currentRuntimeActionKey != key) return", mappedStopPolicy);
+            var stopTelemetry = mappedStopPolicy.IndexOf("Emit(\"SCRIPT_STOP\"", StringComparison.Ordinal);
+            var stopArbitration = mappedStopPolicy.IndexOf("StopCurrentRuntimeAction(playback.Action)", StringComparison.Ordinal);
+            Assert.True(stopTelemetry >= 0 && stopArbitration > stopTelemetry);
+            var arbitrationStart = repairedObserver.IndexOf("private void StopCurrentRuntimeAction", mappedUpdate, StringComparison.Ordinal);
+            var removalStart = repairedObserver.IndexOf("private void RemoveAnimatorMappings", arbitrationStart, StringComparison.Ordinal);
+            Assert.True(arbitrationStart > mappedUpdate && removalStart > arbitrationStart);
+            var arbitrationPolicy = repairedObserver[arbitrationStart..removalStart];
+            var reactionStop = arbitrationPolicy.IndexOf("_edi?.Stop(stopUnderlying: !hasTrackedPrimary)", StringComparison.Ordinal);
+            var fallbackPlay = arbitrationPolicy.IndexOf("_edi?.Play(playback.Action, playback.SeekMilliseconds)", StringComparison.Ordinal);
+            Assert.True(reactionStop >= 0 && fallbackPlay > reactionStop);
             var repairedClient = await File.ReadAllTextAsync(ediClientPath);
             Assert.Contains("/Intensity/{clamped}", repairedClient);
             Assert.Contains("Interlocked.Increment(ref _playbackRevision)", repairedClient);
+            Assert.Contains("bool preservePendingPlay = false", repairedClient);
+            Assert.Contains("if (!preservePendingPlay && revision !=", repairedClient);
             Assert.Contains("await PostAsync(\"/Stop\")", repairedClient);
             Assert.Contains("await PostAsync(route)", repairedClient);
             Assert.Contains("bool stopUnderlying = false", repairedClient);
@@ -348,7 +450,10 @@ public sealed class UnityToolingTests
             Assert.DoesNotContain("/Stop", repairedClient[playStart..stopStart]);
             var repairedProject = await File.ReadAllTextAsync(Path.Combine(output, "IntegrationMod.csproj"));
             Assert.Contains("<Reference Include=\"UnityEngine\"", repairedProject);
+            Assert.Contains("<Reference Include=\"UnityEngine.DirectorModule\"", repairedProject);
             Assert.Contains("<Reference Include=\"PlayMaker\"", repairedProject);
+            Assert.Contains("<Reference Include=\"spine-csharp\"", repairedProject);
+            Assert.Contains("<Reference Include=\"spine-unity\"", repairedProject);
             Assert.DoesNotContain("UnityEngine.SceneManagementModule", repairedProject);
         }
         finally
@@ -371,11 +476,16 @@ public sealed class UnityToolingTests
             File.WriteAllBytes(executable, []);
             var managed = Path.Combine(gameRoot, "FixtureGame_Data", "Managed");
             Directory.CreateDirectory(managed);
-            File.WriteAllBytes(Path.Combine(managed, "PlayMaker.dll"), []);
+            foreach (var name in new[]
+                     {
+                         "UnityEngine.AnimationModule.dll", "UnityEngine.DirectorModule.dll", "PlayMaker.dll",
+                         "spine-unity.dll", "spine-csharp.dll"
+                     })
+                File.WriteAllBytes(Path.Combine(managed, name), []);
             var inspection = new UnityInspectionResult(executable, UnityRuntimeKind.Mono, "Amd64",
                 Path.Combine(gameRoot, "FixtureGame_Data"), [])
             {
-                RecommendedTargetFramework = "net8.0",
+                RecommendedTargetFramework = "netstandard2.0",
                 BepInEx = BepInExFlavor.Mono5,
                 IsModularUnity = true
             };
@@ -388,8 +498,9 @@ public sealed class UnityToolingTests
             await File.WriteAllTextAsync(Path.Combine(output, "IntegrationMod.csproj"), """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
-                    <TargetFramework>net8.0</TargetFramework>
+                    <TargetFramework>netstandard2.0</TargetFramework>
                     <AssemblyName>IntegrationMod</AssemblyName>
+                    <LangVersion>latest</LangVersion>
                     <ImplicitUsings>enable</ImplicitUsings>
                     <Nullable>enable</Nullable>
                   </PropertyGroup>
@@ -424,18 +535,33 @@ public sealed class UnityToolingTests
             Directory.CreateDirectory(gameRoot);
             var executable = Path.Combine(gameRoot, "FixtureGame.exe");
             File.WriteAllBytes(executable, []);
+            var interop = Path.Combine(gameRoot, "BepInEx", "interop");
+            Directory.CreateDirectory(interop);
+            foreach (var name in new[]
+                     {
+                         "UnityEngine.AnimationModule.dll", "UnityEngine.DirectorModule.dll", "PlayMaker.dll",
+                         "spine-unity.dll", "spine-csharp.dll"
+                     })
+                File.WriteAllBytes(Path.Combine(interop, name), []);
             var inspection = new UnityInspectionResult(executable, UnityRuntimeKind.Il2Cpp, "Amd64",
                 Path.Combine(gameRoot, "FixtureGame_Data"), [])
             {
-                RecommendedTargetFramework = "net8.0",
+                RecommendedTargetFramework = "net6.0",
                 BepInEx = BepInExFlavor.Il2Cpp6
             };
             await new UnityModScaffolder().GenerateAsync(new StudioProject { Name = "IL2CPP Fixture" }, inspection, output);
+            var generatedProject = await File.ReadAllTextAsync(Path.Combine(output, "IntegrationMod.csproj"));
+            var generatedObserver = await File.ReadAllTextAsync(Path.Combine(output, "RuntimeObserver.cs"));
+            Assert.DoesNotContain("spine-unity", generatedProject);
+            Assert.DoesNotContain("SkeletonAnimation", generatedObserver);
+            Assert.Contains("Spine-Unity", generatedObserver);
+            Assert.Contains("id=spine-unity;support=detected-only", generatedObserver);
             await File.WriteAllTextAsync(Path.Combine(output, "IntegrationMod.csproj"), """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
-                    <TargetFramework>net8.0</TargetFramework>
+                    <TargetFramework>net6.0</TargetFramework>
                     <AssemblyName>IntegrationMod</AssemblyName>
+                    <LangVersion>latest</LangVersion>
                     <ImplicitUsings>enable</ImplicitUsings>
                     <Nullable>enable</Nullable>
                   </PropertyGroup>
@@ -625,6 +751,24 @@ public sealed class UnityToolingTests
             {
                 public float length { get; set; }
                 public bool isLooping { get; set; }
+                public WrapMode wrapMode { get; set; }
+            }
+            public enum WrapMode { Once, Loop, PingPong, Default, ClampForever }
+            public class AnimationState
+            {
+                public string name { get; set; } = string.Empty;
+                public AnimationClip? clip { get; set; }
+                public float normalizedTime { get; set; }
+                public float length { get; set; }
+                public float speed { get; set; } = 1;
+                public bool enabled { get; set; }
+                public float weight { get; set; }
+                public WrapMode wrapMode { get; set; }
+            }
+            public class Animation : Behaviour, System.Collections.IEnumerable
+            {
+                public WrapMode wrapMode { get; set; }
+                public System.Collections.IEnumerator GetEnumerator() => Array.Empty<AnimationState>().GetEnumerator();
             }
             public static class Resources
             {
@@ -639,6 +783,21 @@ public sealed class UnityToolingTests
             {
                 public static bool isFocused => true;
                 public static event Action? onBeforeRender;
+            }
+        }
+
+        namespace UnityEngine.Playables
+        {
+            public enum PlayState { Playing, Paused, Delayed }
+            public enum DirectorWrapMode { Hold, Loop, None }
+            public class PlayableAsset : UnityEngine.Object { }
+            public class PlayableDirector : UnityEngine.Behaviour
+            {
+                public PlayableAsset? playableAsset { get; set; }
+                public PlayState state { get; set; }
+                public double time { get; set; }
+                public double duration { get; set; }
+                public DirectorWrapMode extrapolationMode { get; set; }
             }
         }
 
@@ -671,6 +830,44 @@ public sealed class UnityToolingTests
             {
                 public PlayMakerFSM FsmComponent { get; } = new();
                 public void SwitchState(FsmState state) { }
+            }
+        }
+
+        namespace Spine
+        {
+            public sealed class ExposedList<T>
+            {
+                public int Count { get; set; }
+                public T[] Items { get; set; } = [];
+            }
+            public sealed class Animation
+            {
+                public string Name { get; set; } = string.Empty;
+            }
+            public sealed class TrackEntry
+            {
+                public Animation? Animation { get; set; }
+                public float Delay { get; set; }
+                public bool Loop { get; set; }
+                public float TrackTime { get; set; }
+                public float AnimationStart { get; set; }
+                public float AnimationEnd { get; set; }
+                public float TimeScale { get; set; } = 1;
+                public float Alpha { get; set; } = 1;
+            }
+            public sealed class AnimationState
+            {
+                public float TimeScale { get; set; } = 1;
+                public ExposedList<TrackEntry?> Tracks { get; } = new();
+            }
+        }
+
+        namespace Spine.Unity
+        {
+            public sealed class SkeletonAnimation : UnityEngine.Behaviour
+            {
+                public float timeScale { get; set; } = 1;
+                public Spine.AnimationState? AnimationState { get; set; }
             }
         }
         """;
