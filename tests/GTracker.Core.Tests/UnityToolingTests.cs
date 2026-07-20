@@ -492,7 +492,21 @@ public sealed class UnityToolingTests
             var project = new StudioProject
             {
                 Name = "Compile Fixture",
-                Actions = [new AuthoredAction { Name = "attack", FileName = "attack" }]
+                Actions = [new AuthoredAction { Name = "attack", FileName = "attack" }],
+                Game = new GameTarget
+                {
+                    TriggerMappings =
+                    [
+                        new UnityTriggerMapping
+                        {
+                            Kind = UnityTriggerKind.AnimationClip,
+                            Candidate = "Shared Loop",
+                            ActionName = "attack",
+                            ObjectPath = "GalleryRoot/Player/Animator",
+                            CycleDurationMilliseconds = 1000
+                        }
+                    ]
+                }
             };
             await new UnityModScaffolder().GenerateAsync(project, inspection, output);
             await File.WriteAllTextAsync(Path.Combine(output, "IntegrationMod.csproj"), """
@@ -511,6 +525,26 @@ public sealed class UnityToolingTests
             var build = await new UnityModDeployer().BuildAsync(output);
 
             Assert.True(build.Success, build.Output);
+            var loadContext = new System.Runtime.Loader.AssemblyLoadContext(
+                "GeneratedMonoFixture-" + Guid.NewGuid().ToString("N"), isCollectible: true);
+            try
+            {
+                using var assemblyStream = File.OpenRead(build.AssemblyPath);
+                var assembly = loadContext.LoadFromStream(assemblyStream);
+                var preset = assembly.GetType("GamePreset", throwOnError: true)!;
+                var matchAnimation = preset.GetMethod("TryMatchAnimation")!;
+                object?[] wrappedPathArguments = ["Shared Loop", "Player/Animator", 1000, null];
+                Assert.True((bool)matchAnimation.Invoke(null, wrappedPathArguments)!);
+                Assert.Equal("attack", wrappedPathArguments[3]);
+                object?[] differentPathArguments = ["Shared Loop", "Enemy/Animator", 1000, null];
+                Assert.False((bool)matchAnimation.Invoke(null, differentPathArguments)!);
+                object?[] leafOnlyArguments = ["Shared Loop", "Animator", 1000, null];
+                Assert.False((bool)matchAnimation.Invoke(null, leafOnlyArguments)!);
+            }
+            finally
+            {
+                loadContext.Unload();
+            }
             var install = new UnityModDeployer().Install(build);
             Assert.True(File.Exists(install.PluginPath));
             Assert.True(File.Exists(install.OwnershipManifestPath));

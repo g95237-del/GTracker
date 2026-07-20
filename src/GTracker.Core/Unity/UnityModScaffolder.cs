@@ -1878,9 +1878,8 @@ public sealed class UnityModScaffolder
                 foreach (var mapping in AnimationMappings)
                 {
                     if (!mapping.Candidate.Equals(normalized, StringComparison.OrdinalIgnoreCase)) continue;
-                    var pathSpecificity = string.IsNullOrWhiteSpace(mapping.ObjectPath) ? 0 : 1;
-                    if (pathSpecificity > 0 &&
-                        !mapping.ObjectPath.Equals(objectPath, StringComparison.OrdinalIgnoreCase)) continue;
+                    var pathSpecificity = ObjectPathSpecificity(mapping.ObjectPath, objectPath);
+                    if (pathSpecificity < 0) continue;
                     var timingSpecificity = mapping.CycleDurationMilliseconds > 0 ? 1 : 0;
                     var difference = int.MaxValue;
                     if (timingSpecificity > 0)
@@ -1911,6 +1910,22 @@ public sealed class UnityModScaffolder
                 }
                 action = string.Empty;
                 return false;
+            }
+
+            private static int ObjectPathSpecificity(string mappedPath, string observedPath)
+            {
+                if (string.IsNullOrWhiteSpace(mappedPath)) return 0;
+                if (string.IsNullOrWhiteSpace(observedPath)) return -1;
+                mappedPath = mappedPath.Trim().Trim('/');
+                observedPath = observedPath.Trim().Trim('/');
+                if (mappedPath.Equals(observedPath, StringComparison.OrdinalIgnoreCase)) return 2;
+
+                var shorterPath = mappedPath.Length < observedPath.Length ? mappedPath : observedPath;
+                if (!shorterPath.Contains('/')) return -1;
+                return mappedPath.EndsWith("/" + observedPath, StringComparison.OrdinalIgnoreCase) ||
+                       observedPath.EndsWith("/" + mappedPath, StringComparison.OrdinalIgnoreCase)
+                    ? 1
+                    : -1;
             }
 
             private static bool TryMatch(Dictionary<string, string> explicitMappings, bool conventionEnabled,
