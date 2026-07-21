@@ -40,16 +40,26 @@ dotnet test GTracker.slnx --configuration Release
 dotnet run --project src\GTracker.App\GTracker.App.csproj --configuration Release
 ```
 
-## Quick Start
+## Preferred Workflow: Timed Unity Games
 
-1. Click **New** and choose a parent folder, or click **Open** and select a folder containing `project.edi.json`.
-2. Select a visible game window and click **Start rolling capture**.
-3. Play through the game. Press `Ctrl+Shift+F8` after a useful scene. If capture is not running, the first press selects the foreground window and starts capture; press it again to capture.
-4. Mark in/out, trim the clip, edit the Default curve, and add other axes as needed.
-5. Confirm the scene name, safe script file stem, type, and loop behavior, then click **Save scene**.
-6. Repeat, click **Validate**, then click **Export EDI gallery**.
-7. Select exactly one immediate child of EDI's `Gallery` folder, such as `Gallery\detailed`.
-8. Point EDI at the parent `Gallery` folder and reload EDI.
+For well-supported games that emit timed Animator/Mecanim, Legacy Animation, Timeline, or Mono Spine events, **Capture cycle** is the dominant workflow. It is faster and more precise than manually trimming every scene.
+
+1. Click **New**, select the game executable, and click **Analyze Unity runtime**.
+2. Install/initialize BepInEx if needed, generate the mod project, then click **Build + install**.
+3. Start EDI and the game. Select the visible game window, click **Start rolling capture**, and click **Watch discovery**.
+4. Navigate to the gallery or in-game scene you want to script and let at least a couple of stable loops play.
+5. Select the newest matching timed telemetry event from the current playback while its cycle is still in the rolling buffer, then click **Capture cycle**.
+6. The Studio snapshots the calculated runtime cycle, names the scene when possible, sets loop behavior, and prepares an explicit candidate/path/duration mapping. Check the first and last review frames; manual trim is normally unnecessary.
+7. Click **Pause output** after capturing the event to freeze the telemetry UI while the file continues accumulating, then author the funscript curve.
+8. Click **Save + lock**. This saves the scene and commits the prepared runtime mapping.
+9. Click **Resume output**, move to the next scene, and repeat.
+10. After authoring, close the game and rebuild/install to compile the saved mappings into the plugin, then validate and export the EDI Gallery.
+
+### Manual Capture Fallback
+
+If a game does not expose usable timed events, use `Ctrl+Shift+F8` pre/post-roll capture, then mark in/out and apply trim manually. If capture is not running, the first shortcut press selects the foreground window and starts capture; press it again after the target scene.
+
+Confirm the scene name, file stem, type, loop behavior, and tracks before using **Save scene** or **Save + lock**.
 
 `Save` and `Ctrl+S` save project-level settings only. Use **Save scene** to commit the current clip and curves. The application currently has no unsaved-change prompt when switching projects or exiting.
 
@@ -74,15 +84,15 @@ filler,filler,0,1200,filler,true,
 
 The manifest manages files at the entire `Gallery` root. Re-exporting the same project may remove files from its previous collection when they become stale. Do not have different Studio projects manage the same `Gallery` root.
 
-## Unity Integration
+## Unity Setup Details
 
 1. Select the real game executable, choose **Discovery**, and click **Analyze Unity runtime**.
 2. If needed, close the game and use **Install BepInEx + initialize**. Automatic provisioning supports x64 games and installs the packaged BepInEx 6 Mono or IL2CPP build.
 3. Optionally use **Install EDI** with a standalone, known-compatible folder containing `Edi.exe`. Existing destination `Gallery` contents are preserved.
 4. Click **Generate mod project** and choose an empty folder.
 5. Close the game and click **Build + install**.
-6. Launch EDI and the game, then click **Watch discovery**.
-7. Select a telemetry candidate and authored scene, click **Map selected**, then rebuild/install.
+6. Launch EDI and the game, start rolling capture, then click **Watch discovery**.
+7. Prefer the timed **Capture cycle** workflow above. Use **Map selected** manually for untimed candidates or an already-authored scene.
 
 `Discovery` applies explicit mappings but does not convention-match unrelated names. Other presets can convention-match normalized scene or animation names. Explicit animation mappings can additionally discriminate by hierarchy path and cycle duration.
 
