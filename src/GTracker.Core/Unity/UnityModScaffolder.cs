@@ -210,20 +210,13 @@ public sealed class UnityModScaffolder
 
     private static void ValidateProjectActions(StudioProject project)
     {
-        var identifierCollisions = project.Actions
-            .GroupBy(action => ToIdentifier(action.Name), StringComparer.Ordinal)
+        var duplicateNames = project.Actions
+            .GroupBy(action => action.Name, StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() > 1)
             .Select(group => group.Key)
             .ToArray();
-        if (identifierCollisions.Length > 0)
-            throw new InvalidDataException("Scene names generate duplicate C# identifiers: " + string.Join(", ", identifierCollisions));
-        var matchNameCollisions = project.Actions
-            .GroupBy(action => NormalizeMatchName(action.Name), StringComparer.OrdinalIgnoreCase)
-            .Where(group => group.Count() > 1)
-            .Select(group => group.Key)
-            .ToArray();
-        if (matchNameCollisions.Length > 0)
-            throw new InvalidDataException("Scene names generate ambiguous Unity preset match names: " + string.Join(", ", matchNameCollisions));
+        if (duplicateNames.Length > 0)
+            throw new InvalidDataException("Scene names must be unique: " + string.Join(", ", duplicateNames));
     }
 
     private static string CreateProjectFile(
@@ -540,6 +533,7 @@ public sealed class UnityModScaffolder
             private bool _key2Down;
             private bool _key3Down;
             private bool _key4Down;
+            private bool _key5Down;
 
             [DllImport("user32.dll")]
             private static extern short GetAsyncKeyState(int virtualKey);
@@ -572,6 +566,7 @@ public sealed class UnityModScaffolder
         {{playMakerAwakeStatement}}        var scene = SceneManager.GetActiveScene();
                 _hasFocus = Application.isFocused;
                 SyncHotkeyState();
+                _edi?.ActivateFiller();
         {{capabilityStatements.ToString().TrimEnd()}}
                 ObserveScene(scene.name, "startup", triggerMapping: true);
                 _nextScanAt = 0f;
@@ -648,6 +643,7 @@ public sealed class UnityModScaffolder
                     var key2Down = IsHotkeyDown(0x32, 0x62);
                     var key3Down = IsHotkeyDown(0x33, 0x63);
                     var key4Down = IsHotkeyDown(0x34, 0x64);
+                    var key5Down = IsHotkeyDown(0x35, 0x65);
                     if (_hasFocus && Application.isFocused && key1Down && !_key1Down)
                     {
                         _edi?.Pause();
@@ -668,10 +664,16 @@ public sealed class UnityModScaffolder
                         _edi?.SetIntensity(100);
                         _log?.Invoke("EDI hotkey 4: intensity set to 100%.");
                     }
+                    if (_hasFocus && Application.isFocused && key5Down && !_key5Down)
+                    {
+                        _edi?.ActivateFiller();
+                        _log?.Invoke("EDI hotkey 5: filler activated.");
+                    }
                     _key1Down = key1Down;
                     _key2Down = key2Down;
                     _key3Down = key3Down;
                     _key4Down = key4Down;
+                    _key5Down = key5Down;
                 }
                 catch (Exception exception)
                 {
@@ -688,6 +690,7 @@ public sealed class UnityModScaffolder
                     _key2Down = IsHotkeyDown(0x32, 0x62);
                     _key3Down = IsHotkeyDown(0x33, 0x63);
                     _key4Down = IsHotkeyDown(0x34, 0x64);
+                    _key5Down = IsHotkeyDown(0x35, 0x65);
                 }
                 catch (Exception exception)
                 {
@@ -709,14 +712,22 @@ public sealed class UnityModScaffolder
                 _hasFocus = hasFocus;
                 SyncHotkeyState();
                 if (!hasFocus) StopAllMappedPlayback("application-focus-lost", preserveSceneAction: true);
-                else ResumeMappedScene("application-focus-restored");
+                else
+                {
+                    _edi?.ActivateFiller();
+                    ResumeMappedScene("application-focus-restored");
+                }
             }
 
             private void OnApplicationPause(bool paused)
             {
                 _applicationPaused = paused;
                 if (paused) StopAllMappedPlayback("application-paused", preserveSceneAction: true);
-                else ResumeMappedScene("application-resumed");
+                else
+                {
+                    _edi?.ActivateFiller();
+                    ResumeMappedScene("application-resumed");
+                }
             }
 
             private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
@@ -1811,19 +1822,26 @@ public sealed class UnityModScaffolder
 
     private static string CreateGamePreset(StudioProject project, string pluginGuid, UnityModPresetKind preset)
     {
+        var actionIdentifiers = CreateActionIdentifiers(project.Actions);
         var conventionEntries = new StringBuilder();
         var reactionEntries = new StringBuilder();
-        foreach (var action in project.Actions)
+        var conventionActions = project.Actions
+            .GroupBy(action => NormalizeMatchName(action.Name), StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() == 1)
+            .Select(group => group.Single());
+        foreach (var action in conventionActions)
         {
             conventionEntries.Append("        [")
                 .Append(CSharpLiteral(NormalizeMatchName(action.Name)))
                 .Append("] = ActionNames.")
-                .Append(ToIdentifier(action.Name))
+                .Append(actionIdentifiers[action.Name])
                 .AppendLine(",");
-            if (action.Type == EdiGalleryType.Reaction)
-                reactionEntries.Append("        ActionNames.")
-                    .Append(ToIdentifier(action.Name))
-                    .AppendLine(",");
+        }
+        foreach (var action in project.Actions.Where(action => action.Type == EdiGalleryType.Reaction))
+        {
+            reactionEntries.Append("        ActionNames.")
+                .Append(actionIdentifiers[action.Name])
+                .AppendLine(",");
         }
         var actions = project.Actions.ToDictionary(action => action.Name, StringComparer.OrdinalIgnoreCase);
         var mappings = project.Game.TriggerMappings
@@ -1832,9 +1850,10 @@ public sealed class UnityModScaffolder
                                 mapping.CycleDurationMilliseconds, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.Last())
             .ToArray();
-        var sceneEntries = CreateMappingEntries(mappings.Where(mapping => mapping.Kind == UnityTriggerKind.Scene), actions);
+        var sceneEntries = CreateMappingEntries(
+            mappings.Where(mapping => mapping.Kind == UnityTriggerKind.Scene), actions, actionIdentifiers);
         var animationEntries = CreateAnimationMappingEntries(
-            mappings.Where(mapping => mapping.Kind == UnityTriggerKind.AnimationClip), actions);
+            mappings.Where(mapping => mapping.Kind == UnityTriggerKind.AnimationClip), actions, actionIdentifiers);
         var matchScenes = preset is UnityModPresetKind.SceneNames or UnityModPresetKind.SceneAndAnimationNames;
         var matchAnimations = preset is UnityModPresetKind.AnimationNames or UnityModPresetKind.SceneAndAnimationNames;
         return $$"""
@@ -1977,7 +1996,8 @@ public sealed class UnityModScaffolder
 
     private static string CreateMappingEntries(
         IEnumerable<UnityTriggerMapping> mappings,
-        IReadOnlyDictionary<string, AuthoredAction> actions)
+        IReadOnlyDictionary<string, AuthoredAction> actions,
+        IReadOnlyDictionary<string, string> actionIdentifiers)
     {
         var builder = new StringBuilder();
         foreach (var mapping in mappings)
@@ -1985,7 +2005,7 @@ public sealed class UnityModScaffolder
             builder.Append("        [")
                 .Append(CSharpLiteral(NormalizeMatchName(mapping.Candidate)))
                 .Append("] = ActionNames.")
-                .Append(ToIdentifier(actions[mapping.ActionName].Name))
+                .Append(actionIdentifiers[actions[mapping.ActionName].Name])
                 .AppendLine(",");
         }
         return builder.ToString().TrimEnd();
@@ -1993,7 +2013,8 @@ public sealed class UnityModScaffolder
 
     private static string CreateAnimationMappingEntries(
         IEnumerable<UnityTriggerMapping> mappings,
-        IReadOnlyDictionary<string, AuthoredAction> actions)
+        IReadOnlyDictionary<string, AuthoredAction> actions,
+        IReadOnlyDictionary<string, string> actionIdentifiers)
     {
         var builder = new StringBuilder();
         foreach (var mapping in mappings
@@ -2004,7 +2025,7 @@ public sealed class UnityModScaffolder
                 .Append(CSharpLiteral(NormalizeMatchName(mapping.Candidate))).Append(", ")
                 .Append(CSharpLiteral(mapping.ObjectPath.Trim())).Append(", ")
                 .Append(mapping.CycleDurationMilliseconds ?? 0).Append(", ActionNames.")
-                .Append(ToIdentifier(actions[mapping.ActionName].Name))
+                .Append(actionIdentifiers[actions[mapping.ActionName].Name])
                 .AppendLine("),");
         }
         return builder.ToString().TrimEnd();
@@ -2062,6 +2083,7 @@ public sealed class UnityModScaffolder
                 });
             }
         }
+        public void ActivateFiller() => Play("filler", preservePendingPlay: true);
         public void Pause() => Enqueue(() => PostAsync("/Pause?untilResume=true"));
         public void Resume() => Enqueue(() => PostAsync("/Resume?AtCurrentTime=false"));
         public void SetIntensity(int percent)
@@ -2120,17 +2142,36 @@ public sealed class UnityModScaffolder
 
     private static string CreateActionNames(StudioProject project)
     {
+        var actionIdentifiers = CreateActionIdentifiers(project.Actions);
         var builder = new StringBuilder("public static class ActionNames\n{\n");
         foreach (var action in project.Actions)
         {
             builder.Append("    public const string ")
-                .Append(ToIdentifier(action.Name))
+                .Append(actionIdentifiers[action.Name])
                 .Append(" = ")
                 .Append(CSharpLiteral(action.Name))
                 .AppendLine(";");
         }
         if (project.Actions.Count == 0) builder.AppendLine("    public const string Example = \"replace-me\";");
         return builder.AppendLine("}").ToString();
+    }
+
+    private static IReadOnlyDictionary<string, string> CreateActionIdentifiers(IEnumerable<AuthoredAction> actions)
+    {
+        var identifiers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var group in actions.GroupBy(action => ToIdentifier(action.Name), StringComparer.Ordinal))
+        {
+            var ordered = group.OrderBy(action => action.Name, StringComparer.Ordinal)
+                .ThenBy(action => action.Id)
+                .ToArray();
+            for (var index = 0; index < ordered.Length; index++)
+            {
+                identifiers[ordered[index].Name] = ordered.Length == 1
+                    ? group.Key
+                    : group.Key + "_" + (index + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
+        return identifiers;
     }
 
     private static string CreateReadme(
@@ -2157,7 +2198,8 @@ public sealed class UnityModScaffolder
         4. Install only `bin\Release\{{targetFramework}}\IntegrationMod.dll` into a dedicated `BepInEx\plugins` folder.
         5. Start EDI, run the game, and watch discovery telemetry in the studio.
 
-        Playback hotkeys (top row or numpad): `1` pause, `2` resume, `3` intensity 40%, `4` intensity 100%.
+        Playback hotkeys (top row or numpad): `1` pause, `2` resume, `3` intensity 40%, `4` intensity 100%,
+        `5` activate filler.
 
         Runtime discovery records scene changes, Animator and Legacy Animation states, PlayableDirector/Timeline assets,
         Mono Spine tracks, and PlayMaker FSM states when available in:

@@ -237,13 +237,16 @@ public sealed class UnityToolingTests
             Assert.Contains("GetAsyncKeyState", observer);
             Assert.Contains("IsHotkeyDown(0x31, 0x61)", observer);
             Assert.Contains("IsHotkeyDown(0x34, 0x64)", observer);
+            Assert.Contains("IsHotkeyDown(0x35, 0x65)", observer);
             Assert.DoesNotContain("Input.GetKey", observer);
             Assert.Contains("_edi?.Pause()", observer);
             Assert.Contains("_edi?.Resume()", observer);
             Assert.Contains("_edi?.SetIntensity(40)", observer);
             Assert.Contains("_edi?.SetIntensity(100)", observer);
+            Assert.Contains("_edi?.ActivateFiller()", observer);
             Assert.DoesNotContain("PlayMakerFSM", observer);
             Assert.Contains("PostAsync($\"/Intensity/{clamped}\")", ediClient);
+            Assert.Contains("public void ActivateFiller() => Play(\"filler\", preservePendingPlay: true);", ediClient);
             Assert.Contains("public const string EnemyHit = \"enemy-hit\";", actions);
         }
         finally
@@ -492,7 +495,12 @@ public sealed class UnityToolingTests
             var project = new StudioProject
             {
                 Name = "Compile Fixture",
-                Actions = [new AuthoredAction { Name = "attack", FileName = "attack" }],
+                Actions =
+                [
+                    new AuthoredAction { Name = "attack", FileName = "attack" },
+                    new AuthoredAction { Name = "Sex2_Zombie 2", FileName = "zombie-spaced" },
+                    new AuthoredAction { Name = "Sex2_Zombie2", FileName = "zombie-compact" }
+                ],
                 Game = new GameTarget
                 {
                     TriggerMappings =
@@ -503,6 +511,22 @@ public sealed class UnityToolingTests
                             Candidate = "Shared Loop",
                             ActionName = "attack",
                             ObjectPath = "GalleryRoot/Player/Animator",
+                            CycleDurationMilliseconds = 1000
+                        },
+                        new UnityTriggerMapping
+                        {
+                            Kind = UnityTriggerKind.AnimationClip,
+                            Candidate = "Sex2_Zombie 2",
+                            ActionName = "Sex2_Zombie 2",
+                            ObjectPath = "GalleryRoot/Zombie 2/Animator",
+                            CycleDurationMilliseconds = 1000
+                        },
+                        new UnityTriggerMapping
+                        {
+                            Kind = UnityTriggerKind.AnimationClip,
+                            Candidate = "Sex2_Zombie2",
+                            ActionName = "Sex2_Zombie2",
+                            ObjectPath = "GalleryRoot/Zombie2/Animator",
                             CycleDurationMilliseconds = 1000
                         }
                     ]
@@ -536,6 +560,12 @@ public sealed class UnityToolingTests
                 object?[] wrappedPathArguments = ["Shared Loop", "Player/Animator", 1000, null];
                 Assert.True((bool)matchAnimation.Invoke(null, wrappedPathArguments)!);
                 Assert.Equal("attack", wrappedPathArguments[3]);
+                object?[] spacedZombieArguments = ["Sex2_Zombie 2", "Zombie 2/Animator", 1000, null];
+                Assert.True((bool)matchAnimation.Invoke(null, spacedZombieArguments)!);
+                Assert.Equal("Sex2_Zombie 2", spacedZombieArguments[3]);
+                object?[] compactZombieArguments = ["Sex2_Zombie2", "Zombie2/Animator", 1000, null];
+                Assert.True((bool)matchAnimation.Invoke(null, compactZombieArguments)!);
+                Assert.Equal("Sex2_Zombie2", compactZombieArguments[3]);
                 object?[] differentPathArguments = ["Shared Loop", "Enemy/Animator", 1000, null];
                 Assert.False((bool)matchAnimation.Invoke(null, differentPathArguments)!);
                 object?[] leafOnlyArguments = ["Shared Loop", "Animator", 1000, null];
@@ -636,7 +666,7 @@ public sealed class UnityToolingTests
     }
 
     [Fact]
-    public async Task Scaffold_RejectsActionIdentifierCollisions()
+    public async Task Scaffold_DisambiguatesActionIdentifierAndConventionCollisions()
     {
         var directory = CreateTemporaryDirectory();
         try
@@ -647,13 +677,45 @@ public sealed class UnityToolingTests
             {
                 Actions =
                 [
-                    new AuthoredAction { Name = "enemy-hit", FileName = "one" },
-                    new AuthoredAction { Name = "enemy hit", FileName = "two" }
-                ]
+                    new AuthoredAction { Name = "Sex2_Zombie 2", FileName = "one" },
+                    new AuthoredAction { Name = "Sex2_Zombie2", FileName = "two" }
+                ],
+                Game = new GameTarget
+                {
+                    TriggerMappings =
+                    [
+                        new UnityTriggerMapping
+                        {
+                            Kind = UnityTriggerKind.AnimationClip,
+                            Candidate = "Sex2_Zombie 2",
+                            ActionName = "Sex2_Zombie 2",
+                            ObjectPath = "Enemies/Zombie 2",
+                            CycleDurationMilliseconds = 1000
+                        },
+                        new UnityTriggerMapping
+                        {
+                            Kind = UnityTriggerKind.AnimationClip,
+                            Candidate = "Sex2_Zombie2",
+                            ActionName = "Sex2_Zombie2",
+                            ObjectPath = "Enemies/Zombie2",
+                            CycleDurationMilliseconds = 1000
+                        }
+                    ]
+                }
             };
 
-            await Assert.ThrowsAsync<InvalidDataException>(() =>
-                new UnityModScaffolder().GenerateAsync(project, inspection, Path.Combine(directory, "mod")));
+            var output = Path.Combine(directory, "mod");
+            await new UnityModScaffolder().GenerateAsync(project, inspection, output);
+
+            var actions = await File.ReadAllTextAsync(Path.Combine(output, "ActionNames.cs"));
+            var preset = await File.ReadAllTextAsync(Path.Combine(output, "GamePreset.cs"));
+            Assert.Contains("public const string Sex2Zombie2_1 = \"Sex2_Zombie 2\";", actions);
+            Assert.Contains("public const string Sex2Zombie2_2 = \"Sex2_Zombie2\";", actions);
+            Assert.DoesNotContain("[\"sex2zombie2\"] =", preset);
+            Assert.Contains("new AnimationMapping(\"sex2zombie2\", \"Enemies/Zombie 2\", 1000, " +
+                            "ActionNames.Sex2Zombie2_1)", preset);
+            Assert.Contains("new AnimationMapping(\"sex2zombie2\", \"Enemies/Zombie2\", 1000, " +
+                            "ActionNames.Sex2Zombie2_2)", preset);
         }
         finally
         {

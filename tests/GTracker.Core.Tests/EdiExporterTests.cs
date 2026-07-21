@@ -37,14 +37,79 @@ public sealed class EdiExporterTests
 
             var result = await new EdiExporter().ExportAsync(project, directory);
 
-            Assert.Equal(1, result.DefinitionCount);
-            Assert.Equal(2, result.ScriptCount);
+            Assert.Equal(2, result.DefinitionCount);
+            Assert.Equal(3, result.ScriptCount);
             Assert.True(File.Exists(Path.Combine(directory, "Definitions.csv")));
             Assert.True(File.Exists(Path.Combine(directory, "intense", "attack.funscript")));
             Assert.True(File.Exists(Path.Combine(directory, "intense", "attack.twist.funscript")));
+            Assert.True(File.Exists(Path.Combine(directory, "intense", "filler.funscript")));
             var csv = await File.ReadAllTextAsync(Path.Combine(directory, "Definitions.csv"));
             Assert.Contains("\"attack,heavy\",attack,0,1200,gallery,true,\"Quoted \"\"description\"\"\"", csv);
+            Assert.Contains("filler,filler,0,1200,filler,true,", csv);
             Assert.Equal("-Combat\nattack,heavy\n\n", NormalizeNewlines(await File.ReadAllTextAsync(Path.Combine(directory, "BundleDefinition.txt"))));
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task Export_WritesBuiltInFillerToEveryVariantAndTracksVariantChanges()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            var detailed = new AuthoredAction
+            {
+                Name = "detailed-scene",
+                FileName = "detailed-scene",
+                Variant = "Detailed",
+                DurationMilliseconds = 1000,
+                Tracks = [new ActionTrack { Points = [new(0, 20), new(1000, 20)] }]
+            };
+            var project = new StudioProject
+            {
+                Name = "Filler Test",
+                Actions =
+                [
+                    new AuthoredAction
+                    {
+                        Name = "default-scene",
+                        FileName = "default-scene",
+                        DurationMilliseconds = 1000,
+                        Tracks = [new ActionTrack { Points = [new(0, 80), new(1000, 80)] }]
+                    },
+                    detailed
+                ]
+            };
+
+            var exporter = new EdiExporter();
+            var result = await exporter.ExportAsync(project, directory);
+
+            Assert.Equal(3, result.DefinitionCount);
+            Assert.Equal(4, result.ScriptCount);
+            Assert.True(File.Exists(Path.Combine(directory, "filler.funscript")));
+            var detailedFiller = Path.Combine(directory, "Detailed", "filler.funscript");
+            Assert.True(File.Exists(detailedFiller));
+            await using (var stream = File.OpenRead(detailedFiller))
+            {
+                using var json = await JsonDocument.ParseAsync(stream);
+                var actions = json.RootElement.GetProperty("actions").EnumerateArray().ToArray();
+                Assert.Equal(new[] { 0, 600, 1200 },
+                    actions.Select(action => action.GetProperty("at").GetInt32()).ToArray());
+                Assert.Equal(new[] { 0, 40, 0 },
+                    actions.Select(action => action.GetProperty("pos").GetInt32()).ToArray());
+            }
+            var manifest = await File.ReadAllTextAsync(Path.Combine(directory, ".edi-integration-studio-export.json"));
+            Assert.Contains("Detailed/filler.funscript", manifest);
+            Assert.Contains("filler.funscript", manifest);
+
+            detailed.Variant = "intense";
+            await exporter.ExportAsync(project, directory);
+
+            Assert.False(File.Exists(detailedFiller));
+            Assert.True(File.Exists(Path.Combine(directory, "intense", "filler.funscript")));
         }
         finally
         {

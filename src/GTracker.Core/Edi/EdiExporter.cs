@@ -17,7 +17,10 @@ public sealed record FunscriptPreview(
 public sealed class EdiExporter
 {
     private const string ManifestFileName = ".edi-integration-studio-export.json";
+    private const string BuiltInFillerName = "filler";
+    private const int BuiltInFillerDurationMilliseconds = 1200;
     private static readonly UTF8Encoding Utf8WithoutBom = new(false);
+    private static readonly FunscriptPoint[] BuiltInFillerPoints = [new(0, 0), new(600, 40), new(1200, 0)];
     private static readonly JsonSerializerOptions ScriptJsonOptions = new()
     {
         WriteIndented = true,
@@ -115,7 +118,8 @@ public sealed class EdiExporter
                 CancellationToken.None);
             File.Move(temporaryManifest, manifestTarget, true);
 
-            return new(outputDirectory, project.Actions.Count, scriptCount, issues);
+            var definitionCount = project.Actions.Count + (ShouldWriteBuiltInFiller(project) ? 1 : 0);
+            return new(outputDirectory, definitionCount, scriptCount, issues);
         }
         finally
         {
@@ -133,6 +137,10 @@ public sealed class EdiExporter
             "Name,FileName,StartTime,EndTime,Type,Loop,Description"
         };
         var scriptCount = 0;
+        var variants = new HashSet<string>(
+            project.Actions.Select(action => EdiValidator.NormalizeVariant(action.Variant)),
+            StringComparer.OrdinalIgnoreCase);
+        if (variants.Count == 0) variants.Add("default");
 
         foreach (var action in project.Actions)
         {
@@ -162,6 +170,33 @@ public sealed class EdiExporter
             }
         }
 
+        if (ShouldWriteBuiltInFiller(project))
+        {
+            definitionLines.Add(string.Join(',',
+                BuiltInFillerName,
+                BuiltInFillerName,
+                "0",
+                BuiltInFillerDurationMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "filler",
+                "true",
+                string.Empty));
+            var filler = CreateFunscriptPreview(
+                BuiltInFillerPoints, BuiltInFillerDurationMilliseconds, loop: true).Json;
+            foreach (var variant in variants)
+            {
+                var scriptDirectory = variant.Equals("default", StringComparison.OrdinalIgnoreCase)
+                    ? outputDirectory
+                    : Path.Combine(outputDirectory, variant);
+                Directory.CreateDirectory(scriptDirectory);
+                await File.WriteAllTextAsync(
+                    Path.Combine(scriptDirectory, BuiltInFillerName + ".funscript"),
+                    filler,
+                    Utf8WithoutBom,
+                    cancellationToken);
+                scriptCount++;
+            }
+        }
+
         await File.WriteAllLinesAsync(
             Path.Combine(outputDirectory, "Definitions.csv"), definitionLines, Utf8WithoutBom, cancellationToken);
 
@@ -185,6 +220,12 @@ public sealed class EdiExporter
 
         return scriptCount;
     }
+
+    private static bool ShouldWriteBuiltInFiller(StudioProject project) =>
+        !project.Actions.Any(action =>
+            action.Type == EdiGalleryType.Filler ||
+            action.Name.Equals(BuiltInFillerName, StringComparison.OrdinalIgnoreCase) ||
+            action.FileName.Equals(BuiltInFillerName, StringComparison.OrdinalIgnoreCase));
 
     private static string SafeManifestPath(string root, string relativePath)
     {
