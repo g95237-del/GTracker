@@ -4,6 +4,10 @@ EDI Integration Studio is a Windows authoring tool for building game integration
 
 The repository is named `GTracker`; the application is branded **EDI Integration Studio**. The project is under active development and currently targets Windows x64.
 
+![EDI Integration Studio authoring a captured Unity scene with runtime telemetry and a funscript curve](docs/images/studio-workspace.png)
+
+_Authoring workspace shown with a synthetic demo project and capture._
+
 <a href='https://ko-fi.com/Y1C323MGD6' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi6.png?v=6' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
 
 ## Capabilities
