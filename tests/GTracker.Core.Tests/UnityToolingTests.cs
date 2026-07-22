@@ -434,6 +434,9 @@ public sealed class UnityToolingTests
             var reactionStop = arbitrationPolicy.IndexOf("_edi?.Stop(stopUnderlying: !hasTrackedPrimary)", StringComparison.Ordinal);
             var fallbackPlay = arbitrationPolicy.IndexOf("_edi?.Play(playback.Action, playback.SeekMilliseconds)", StringComparison.Ordinal);
             Assert.True(reactionStop >= 0 && fallbackPlay > reactionStop);
+            var terminalStop = arbitrationPolicy.IndexOf("if (!stoppedReaction) _edi?.Stop()", StringComparison.Ordinal);
+            var terminalFiller = arbitrationPolicy.IndexOf("_edi?.ActivateFiller()", StringComparison.Ordinal);
+            Assert.True(terminalStop > fallbackPlay && terminalFiller > terminalStop);
             var repairedClient = await File.ReadAllTextAsync(ediClientPath);
             Assert.Contains("/Intensity/{clamped}", repairedClient);
             Assert.Contains("Interlocked.Increment(ref _playbackRevision)", repairedClient);

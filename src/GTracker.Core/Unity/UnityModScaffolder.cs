@@ -1049,7 +1049,11 @@ public sealed class UnityModScaffolder
                         "source=scene;reason=resume-after-reaction;seekMilliseconds=0");
                     return;
                 }
-                if (!stoppedReaction && !hasSceneFallback) _edi?.Stop();
+                if (!hasSceneFallback)
+                {
+                    if (!stoppedReaction) _edi?.Stop();
+                    _edi?.ActivateFiller();
+                }
             }
 
             private void RemoveAnimatorMappings(string keyPrefix, string reason, string scene, string objectPath)
