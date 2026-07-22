@@ -25,6 +25,12 @@ _Authoring workspace shown with a synthetic demo project and capture._
 
 ## Requirements
 
+### Prebuilt Alpha
+
+Download `GTracker-v0.1.0-alpha.1-win-x64.zip` from the [GitHub Releases page](https://github.com/g95237-del/GTracker/releases), extract the entire archive, and run `GTracker.App.exe`. Keep all extracted DLLs and the `RuntimePackages` folder beside the executable. The release is self-contained, so launching the Studio does not require a separate .NET runtime.
+
+Generating and building Unity integration plugins still requires the .NET 8 SDK and any targeting pack required by the detected Unity framework. This is an experimental alpha; back up projects and expect compatibility issues.
+
 ### Running The Studio
 
 - Windows 10 or later, x64.
@@ -177,4 +183,4 @@ Do not publish project directories, `.ediclip` files, telemetry, `scaffold.json`
 - [`docs/EDI_RESEARCH.md`](docs/EDI_RESEARCH.md)
 - [`docs/UNITY_FRAMEWORK_RESEARCH.md`](docs/UNITY_FRAMEWORK_RESEARCH.md)
 
-The repository does not yet declare a project-wide software license. The packaged BepInEx distributions retain their separate license notice under `src/GTracker.App/RuntimePackages`.
+GTracker is distributed under the [MIT License](LICENSE). Packaged dependencies retain their own terms as documented in [Third-Party Notices](THIRD-PARTY-NOTICES.md).

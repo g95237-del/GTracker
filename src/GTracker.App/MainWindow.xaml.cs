@@ -2803,7 +2803,7 @@ public partial class MainWindow : Window
             UnregisterHotKey(source.Handle, StopHotkeyId);
         }
         Closing -= Window_Closing;
-        Close();
+        _ = Dispatcher.BeginInvoke(new Action(Close));
     }
 
     [DllImport("user32.dll")]
