@@ -34,7 +34,7 @@ Generating and building Unity integration plugins still requires the .NET 8 SDK 
 ### Running The Studio
 
 - Windows 10 or later, x64.
-- .NET 8 Desktop Runtime unless using a future self-contained release.
+- No separate .NET runtime is required for the prebuilt self-contained release. Framework-dependent source builds require the .NET 8 Desktop Runtime.
 - A DXGI-compatible graphics adapter and a visible, non-minimized game window.
 - EDI for testing Gallery playback.
 
