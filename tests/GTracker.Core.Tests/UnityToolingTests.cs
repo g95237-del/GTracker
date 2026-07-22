@@ -242,6 +242,11 @@ public sealed class UnityToolingTests
             Assert.Contains("ReloadHotkeyConfigIfChanged", observer);
             Assert.Contains("NUMPAD", observer);
             Assert.Contains("function is >= 1 and <= 24", observer);
+            Assert.Contains("',' => 0xBC", observer);
+            Assert.Contains("'.' => 0xBE", observer);
+            Assert.Contains("\"COMMA\" => 0xBC", observer);
+            Assert.Contains("\"PERIOD\" or \"DOT\" => 0xBE", observer);
+            Assert.Contains("value.Split(new[] { '|' }", observer);
             Assert.DoesNotContain("Input.GetKey", observer);
             Assert.Contains("_edi?.Pause()", observer);
             Assert.Contains("_edi?.Resume()", observer);

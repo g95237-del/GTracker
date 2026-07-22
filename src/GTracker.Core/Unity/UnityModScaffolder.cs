@@ -732,7 +732,7 @@ public sealed class UnityModScaffolder
             private static void BindHotkeys()
             {
                 if (_hotkeyConfig is null) return;
-                const string format = "Use key names such as F6, NumPad5, Space, or A. Separate alternatives with |. " +
+                const string format = "Use keys such as F6, NumPad5, Space, A, comma, or period. Separate alternatives with |. " +
                                       "Use None or an empty value to disable.";
                 _pauseHotkey = new ConfiguredHotkey("Pause",
                     _hotkeyConfig.Bind("Hotkeys", "Pause", "1 | NumPad1", "Pause EDI playback. " + format));
@@ -781,7 +781,7 @@ public sealed class UnityModScaffolder
                 if (!string.IsNullOrWhiteSpace(value) &&
                     !value.Trim().Equals("None", StringComparison.OrdinalIgnoreCase))
                 {
-                    foreach (var item in value.Split(new[] { '|', ',', ';' }, StringSplitOptions.RemoveEmptyEntries))
+                    foreach (var item in value.Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries))
                     {
                         var token = item.Trim();
                         if (TryParseVirtualKey(token, out var key)) keys.Add(key);
@@ -806,6 +806,22 @@ public sealed class UnityModScaffolder
                         key = character;
                         return true;
                     }
+                    key = character switch
+                    {
+                        ';' => 0xBA,
+                        '=' or '+' => 0xBB,
+                        ',' => 0xBC,
+                        '-' => 0xBD,
+                        '.' => 0xBE,
+                        '/' => 0xBF,
+                        '`' or '~' => 0xC0,
+                        '[' => 0xDB,
+                        '\\' => 0xDC,
+                        ']' => 0xDD,
+                        '\'' or '"' => 0xDE,
+                        _ => 0
+                    };
+                    if (key > 0) return true;
                 }
                 var normalized = token.Replace("_", string.Empty).Replace("-", string.Empty).ToUpperInvariant();
                 if (normalized.Length == 2 && normalized[0] == 'D' && char.IsDigit(normalized[1]))
@@ -851,6 +867,17 @@ public sealed class UnityModScaffolder
                     "DELETE" => 0x2E,
                     "NUMLOCK" => 0x90,
                     "SCROLLLOCK" => 0x91,
+                    "SEMICOLON" => 0xBA,
+                    "EQUALS" or "PLUS" => 0xBB,
+                    "COMMA" => 0xBC,
+                    "MINUS" => 0xBD,
+                    "PERIOD" or "DOT" => 0xBE,
+                    "SLASH" => 0xBF,
+                    "BACKTICK" or "TILDE" => 0xC0,
+                    "LEFTBRACKET" => 0xDB,
+                    "BACKSLASH" => 0xDC,
+                    "RIGHTBRACKET" => 0xDD,
+                    "APOSTROPHE" or "QUOTE" => 0xDE,
                     _ => 0
                 };
                 if (key > 0) return true;
@@ -2393,7 +2420,7 @@ public sealed class UnityModScaffolder
 
         Playback hotkeys default to: `1` pause, `2` resume, `3` intensity 40%, `4` intensity 100%, and `5`
         activate filler, with matching numpad alternatives. Change them in `BepInEx\config\{{Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(telemetryFile))}}.cfg`
-        under `[Hotkeys]`. Use names such as `F6`, `NumPad5`, `Space`, or `A`; separate alternatives with `|`; use `None`
+        under `[Hotkeys]`. Use keys such as `F6`, `NumPad5`, `Space`, `A`, `,`, or `.`; separate alternatives with `|`; use `None`
         to disable a binding. External edits reload within about one second and whenever the game regains focus.
 
         Runtime discovery records scene changes, Animator and Legacy Animation states, PlayableDirector/Timeline assets,

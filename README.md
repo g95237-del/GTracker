@@ -127,7 +127,7 @@ Mono `.NET 3.5` Unity profiles are detected but are not supported by the current
 
 ### Generated Plugin
 
-Generated plugins create `BepInEx\config\<plugin-guid>.cfg`. Edit its `[Hotkeys]` entries with names such as `F6`, `NumPad5`, `Space`, or `A`; separate alternative keys with `|`, or use `None` to disable a binding. Changes reload within about one second while the game is running. Defaults are:
+Generated plugins create `BepInEx\config\<plugin-guid>.cfg`. Edit its `[Hotkeys]` entries with keys such as `F6`, `NumPad5`, `Space`, `A`, `,`, or `.`; named forms such as `Comma` and `Period` also work. Separate alternative keys with `|`, or use `None` to disable a binding. Changes reload within about one second while the game is running. Defaults are:
 
 | Key | Action |
 | --- | --- |
