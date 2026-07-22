@@ -55,6 +55,7 @@ public partial class MainWindow : Window
     private readonly SemaphoreSlim _unityOperationGate = new(1, 1);
     private readonly Dictionary<EdiAxis, List<FunscriptPoint>> _workingTracks = [];
     private readonly HashSet<string> _suppressedTelemetryKinds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _suppressedTelemetryCandidates = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _suppressedTelemetryStreams = new(StringComparer.OrdinalIgnoreCase);
     private StudioProject _project = new();
     private string? _projectDirectory;
@@ -2528,10 +2529,27 @@ public partial class MainWindow : Window
         SetStatus($"Hidden all {entry.Kind} telemetry events.");
     }
 
+    private void SuppressTelemetryCandidate_Click(object sender, RoutedEventArgs e)
+    {
+        if (UnityTelemetryList.SelectedItem is not UnityTelemetryEntry entry ||
+            string.IsNullOrWhiteSpace(entry.Candidate))
+        {
+            SetStatus("Select a named telemetry event to hide first.", true);
+            return;
+        }
+        _suppressedTelemetryCandidates.Add(entry.Candidate);
+        RemoveTelemetryEntries(item => item.Candidate.Equals(entry.Candidate, StringComparison.OrdinalIgnoreCase));
+        UpdateTelemetryFilterStatus();
+        UpdateTelemetryOutputStatus();
+        SetStatus($"Hidden all telemetry events named '{entry.Candidate}'.");
+    }
+
     private void ClearTelemetrySuppressions_Click(object sender, RoutedEventArgs e)
     {
-        if (_suppressedTelemetryKinds.Count == 0 && _suppressedTelemetryStreams.Count == 0) return;
+        if (_suppressedTelemetryKinds.Count == 0 && _suppressedTelemetryCandidates.Count == 0 &&
+            _suppressedTelemetryStreams.Count == 0) return;
         _suppressedTelemetryKinds.Clear();
+        _suppressedTelemetryCandidates.Clear();
         _suppressedTelemetryStreams.Clear();
         UpdateTelemetryFilterStatus();
         _telemetryEntries.Clear();
@@ -2543,6 +2561,7 @@ public partial class MainWindow : Window
 
     private bool IsTelemetrySuppressed(string kind, string candidate, string objectPath) =>
         _suppressedTelemetryKinds.Contains(kind) ||
+        _suppressedTelemetryCandidates.Contains(candidate) ||
         _suppressedTelemetryStreams.Contains(TelemetryStreamKey(kind, candidate, objectPath));
 
     private static string TelemetryStreamKey(string kind, string candidate, string objectPath) =>
@@ -2558,7 +2577,8 @@ public partial class MainWindow : Window
 
     private void UpdateTelemetryFilterStatus()
     {
-        var count = _suppressedTelemetryKinds.Count + _suppressedTelemetryStreams.Count;
+        var count = _suppressedTelemetryKinds.Count + _suppressedTelemetryCandidates.Count +
+                    _suppressedTelemetryStreams.Count;
         TelemetryFilterStatusText.Text = count == 0 ? "No hidden events" : $"{count} filter(s) active";
     }
 
@@ -2649,6 +2669,7 @@ public partial class MainWindow : Window
         if (clearSuppressions)
         {
             _suppressedTelemetryKinds.Clear();
+            _suppressedTelemetryCandidates.Clear();
             _suppressedTelemetryStreams.Clear();
             UpdateTelemetryFilterStatus();
         }

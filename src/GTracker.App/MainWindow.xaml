@@ -197,6 +197,8 @@
                         <WrapPanel Margin="0,1">
                             <Button Content="Hide selected" Click="SuppressTelemetrySelected_Click" Padding="7,2"
                                     ToolTip="Hide this event kind, candidate, and object path"/>
+                            <Button Content="Hide name" Click="SuppressTelemetryCandidate_Click" Padding="7,2"
+                                    ToolTip="Hide every event with the selected candidate name, regardless of kind or object path"/>
                             <Button Content="Hide kind" Click="SuppressTelemetryKind_Click" Padding="7,2"
                                     ToolTip="Hide every event with the selected event kind, such as ANIMATOR_LOOP"/>
                             <Button Content="Reset filters" Click="ClearTelemetrySuppressions_Click" Padding="7,2"
