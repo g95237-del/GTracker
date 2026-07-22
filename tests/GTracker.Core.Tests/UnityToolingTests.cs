@@ -234,10 +234,14 @@ public sealed class UnityToolingTests
             Assert.DoesNotContain("PlayMaker", projectFile);
             Assert.Contains("BasePlugin", plugin);
             Assert.Contains("Optional runtime patches failed", plugin);
+            Assert.Contains("RuntimeObserver.ConfigureHotkeys(Config)", plugin);
             Assert.Contains("GetAsyncKeyState", observer);
-            Assert.Contains("IsHotkeyDown(0x31, 0x61)", observer);
-            Assert.Contains("IsHotkeyDown(0x34, 0x64)", observer);
-            Assert.Contains("IsHotkeyDown(0x35, 0x65)", observer);
+            Assert.Contains("ConfigFile", observer);
+            Assert.Contains("Bind(\"Hotkeys\", \"Pause\", \"1 | NumPad1\"", observer);
+            Assert.Contains("Bind(\"Hotkeys\", \"ActivateFiller\", \"5 | NumPad5\"", observer);
+            Assert.Contains("ReloadHotkeyConfigIfChanged", observer);
+            Assert.Contains("NUMPAD", observer);
+            Assert.Contains("function is >= 1 and <= 24", observer);
             Assert.DoesNotContain("Input.GetKey", observer);
             Assert.Contains("_edi?.Pause()", observer);
             Assert.Contains("_edi?.Resume()", observer);
@@ -355,6 +359,7 @@ public sealed class UnityToolingTests
             var pluginPath = Path.Combine(output, "Plugin.cs");
             var observerPath = Path.Combine(output, "RuntimeObserver.cs");
             var ediClientPath = Path.Combine(output, "EdiClient.cs");
+            Assert.Contains("RuntimeObserver.ConfigureHotkeys(Config)", await File.ReadAllTextAsync(pluginPath));
             await File.WriteAllTextAsync(pluginPath, "// hand-written patch");
             await File.WriteAllTextAsync(observerPath, "// stale generated observer");
             await File.WriteAllTextAsync(ediClientPath, "// stale generated client");
@@ -414,6 +419,8 @@ public sealed class UnityToolingTests
             Assert.Contains("Play(action, seekMilliseconds, GamePreset.IsReaction(action))", repairedObserver);
             Assert.Contains("Stop(stopUnderlying: GamePreset.IsReaction(currentAction))", repairedObserver);
             Assert.Contains("GetAsyncKeyState", repairedObserver);
+            Assert.Contains("EnsureHotkeysConfigured", repairedObserver);
+            Assert.Contains("HotkeyConfigFileName", repairedObserver);
             Assert.DoesNotContain("Input.GetKey", repairedObserver);
             Assert.DoesNotContain("Math.Clamp", repairedObserver);
             var mappedStart = repairedObserver.IndexOf("private void StartMappedAnimation", StringComparison.Ordinal);
@@ -758,6 +765,23 @@ public sealed class UnityToolingTests
             public class BaseUnityPlugin : UnityEngine.MonoBehaviour
             {
                 public LogStub Logger { get; } = new();
+                public Configuration.ConfigFile Config { get; } = new(Path.Combine(Paths.ConfigPath, "plugin.cfg"), true);
+            }
+        }
+
+        namespace BepInEx.Configuration
+        {
+            public sealed class ConfigEntry<T>
+            {
+                public ConfigEntry(T value) => Value = value;
+                public T Value { get; set; }
+            }
+            public sealed class ConfigFile
+            {
+                public ConfigFile(string path, bool saveOnInit) => ConfigFilePath = path;
+                public string ConfigFilePath { get; }
+                public ConfigEntry<T> Bind<T>(string section, string key, T value, string description) => new(value);
+                public void Reload() { }
             }
         }
 
@@ -766,6 +790,8 @@ public sealed class UnityToolingTests
             public class BasePlugin
             {
                 public BepInEx.LogStub Log { get; } = new();
+                public BepInEx.Configuration.ConfigFile Config { get; } =
+                    new(Path.Combine(BepInEx.Paths.ConfigPath, "plugin.cfg"), true);
                 public virtual void Load() { }
                 public virtual bool Unload() => true;
                 protected T AddComponent<T>() => default!;

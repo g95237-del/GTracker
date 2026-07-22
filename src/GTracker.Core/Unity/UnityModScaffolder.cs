@@ -340,6 +340,7 @@ public sealed class UnityModScaffolder
             {
                 Edi = new EdiClient({{CSharpLiteral(ediBaseUrl)}}, message => Logger.LogWarning(message));
                 RuntimeObserver.Configure(Edi, message => Logger.LogInfo(message));
+                RuntimeObserver.ConfigureHotkeys(Config);
                 _harmony = new Harmony("{{pluginGuid}}");
                 try { _harmony.PatchAll(); }
                 catch (Exception exception) { Logger.LogWarning($"Optional runtime patches failed: {exception}"); }
@@ -382,6 +383,7 @@ public sealed class UnityModScaffolder
             {
                 Edi = new EdiClient({{CSharpLiteral(ediBaseUrl)}}, message => Log.LogWarning(message));
                 RuntimeObserver.Configure(Edi, message => Log.LogInfo(message));
+                RuntimeObserver.ConfigureHotkeys(Config);
                 _harmony = new Harmony("{{pluginGuid}}");
                 try { _harmony.PatchAll(); }
                 catch (Exception exception) { Log.LogWarning($"Optional runtime patches failed: {exception}"); }
@@ -502,6 +504,7 @@ public sealed class UnityModScaffolder
         using System.Linq;
         using System.Runtime.InteropServices;
         using BepInEx;
+        using BepInEx.Configuration;
         using HarmonyLib;
         using UnityEngine;
         {{timelineUsing}}{{spineUsing}}using UnityEngine.SceneManagement;
@@ -510,6 +513,13 @@ public sealed class UnityModScaffolder
         {
             private static EdiClient? _edi;
             private static Action<string>? _log;
+            private static ConfigFile? _hotkeyConfig;
+            private static ConfiguredHotkey? _pauseHotkey;
+            private static ConfiguredHotkey? _resumeHotkey;
+            private static ConfiguredHotkey? _intensity40Hotkey;
+            private static ConfiguredHotkey? _intensity100Hotkey;
+            private static ConfiguredHotkey? _fillerHotkey;
+            private static DateTime _hotkeyConfigWriteTimeUtc;
             private readonly Dictionary<int, Animator> _animators = new();
         {{legacyAnimationFields}}{{timelineFields}}{{spineFields}}{{timedRuntimeFields}}
         {{playMakerFields}}
@@ -519,6 +529,7 @@ public sealed class UnityModScaffolder
             private StreamWriter? _telemetry;
             private int _lastTickFrame = -1;
             private float _nextAnimatorPollAt;
+            private float _nextHotkeyConfigCheckAt;
             private float _nextScanAt;
             private float _nextTelemetryFlushAt;
             private string _activeSceneAction = string.Empty;
@@ -544,11 +555,18 @@ public sealed class UnityModScaffolder
                 _log = log;
             }
 
+            internal static void ConfigureHotkeys(ConfigFile config)
+            {
+                _hotkeyConfig = config;
+                BindHotkeys();
+            }
+
             private void Awake()
             {
                 try
                 {
                     Directory.CreateDirectory(Paths.ConfigPath);
+                    EnsureHotkeysConfigured();
                     var path = Path.Combine(Paths.ConfigPath, GamePreset.TelemetryFileName);
                     _telemetry = new StreamWriter(new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
                     {
@@ -592,8 +610,13 @@ public sealed class UnityModScaffolder
                 var frame = Time.frameCount;
                 if (frame == _lastTickFrame) return;
                 _lastTickFrame = frame;
-                PollHotkeys();
                 var now = Time.unscaledTime;
+                if (now >= _nextHotkeyConfigCheckAt)
+                {
+                    _nextHotkeyConfigCheckAt = now + 1f;
+                    if (ReloadHotkeyConfigIfChanged()) SyncHotkeyState();
+                }
+                PollHotkeys();
                 if (now >= _nextTelemetryFlushAt)
                 {
                     _nextTelemetryFlushAt = now + 1f;
@@ -639,35 +662,35 @@ public sealed class UnityModScaffolder
                 if (_hotkeysUnavailable) return;
                 try
                 {
-                    var key1Down = IsHotkeyDown(0x31, 0x61);
-                    var key2Down = IsHotkeyDown(0x32, 0x62);
-                    var key3Down = IsHotkeyDown(0x33, 0x63);
-                    var key4Down = IsHotkeyDown(0x34, 0x64);
-                    var key5Down = IsHotkeyDown(0x35, 0x65);
+                    var key1Down = IsHotkeyDown(_pauseHotkey);
+                    var key2Down = IsHotkeyDown(_resumeHotkey);
+                    var key3Down = IsHotkeyDown(_intensity40Hotkey);
+                    var key4Down = IsHotkeyDown(_intensity100Hotkey);
+                    var key5Down = IsHotkeyDown(_fillerHotkey);
                     if (_hasFocus && Application.isFocused && key1Down && !_key1Down)
                     {
                         _edi?.Pause();
-                        _log?.Invoke("EDI hotkey 1: playback paused.");
+                        _log?.Invoke("EDI pause hotkey: playback paused.");
                     }
                     if (_hasFocus && Application.isFocused && key2Down && !_key2Down)
                     {
                         _edi?.Resume();
-                        _log?.Invoke("EDI hotkey 2: playback resumed.");
+                        _log?.Invoke("EDI resume hotkey: playback resumed.");
                     }
                     if (_hasFocus && Application.isFocused && key3Down && !_key3Down)
                     {
                         _edi?.SetIntensity(40);
-                        _log?.Invoke("EDI hotkey 3: intensity set to 40%.");
+                        _log?.Invoke("EDI intensity-40 hotkey: intensity set to 40%.");
                     }
                     if (_hasFocus && Application.isFocused && key4Down && !_key4Down)
                     {
                         _edi?.SetIntensity(100);
-                        _log?.Invoke("EDI hotkey 4: intensity set to 100%.");
+                        _log?.Invoke("EDI intensity-100 hotkey: intensity set to 100%.");
                     }
                     if (_hasFocus && Application.isFocused && key5Down && !_key5Down)
                     {
                         _edi?.ActivateFiller();
-                        _log?.Invoke("EDI hotkey 5: filler activated.");
+                        _log?.Invoke("EDI filler hotkey: filler activated.");
                     }
                     _key1Down = key1Down;
                     _key2Down = key2Down;
@@ -686,11 +709,11 @@ public sealed class UnityModScaffolder
                 if (_hotkeysUnavailable) return;
                 try
                 {
-                    _key1Down = IsHotkeyDown(0x31, 0x61);
-                    _key2Down = IsHotkeyDown(0x32, 0x62);
-                    _key3Down = IsHotkeyDown(0x33, 0x63);
-                    _key4Down = IsHotkeyDown(0x34, 0x64);
-                    _key5Down = IsHotkeyDown(0x35, 0x65);
+                    _key1Down = IsHotkeyDown(_pauseHotkey);
+                    _key2Down = IsHotkeyDown(_resumeHotkey);
+                    _key3Down = IsHotkeyDown(_intensity40Hotkey);
+                    _key4Down = IsHotkeyDown(_intensity100Hotkey);
+                    _key5Down = IsHotkeyDown(_fillerHotkey);
                 }
                 catch (Exception exception)
                 {
@@ -698,8 +721,172 @@ public sealed class UnityModScaffolder
                 }
             }
 
-            private static bool IsHotkeyDown(int mainKey, int numpadKey) =>
-                (GetAsyncKeyState(mainKey) & 0x8000) != 0 || (GetAsyncKeyState(numpadKey) & 0x8000) != 0;
+            private static bool IsHotkeyDown(ConfiguredHotkey? hotkey) => hotkey?.IsDown() == true;
+
+            private static void EnsureHotkeysConfigured()
+            {
+                if (_hotkeyConfig is not null) return;
+                ConfigureHotkeys(new ConfigFile(Path.Combine(Paths.ConfigPath, GamePreset.HotkeyConfigFileName), true));
+            }
+
+            private static void BindHotkeys()
+            {
+                if (_hotkeyConfig is null) return;
+                const string format = "Use key names such as F6, NumPad5, Space, or A. Separate alternatives with |. " +
+                                      "Use None or an empty value to disable.";
+                _pauseHotkey = new ConfiguredHotkey("Pause",
+                    _hotkeyConfig.Bind("Hotkeys", "Pause", "1 | NumPad1", "Pause EDI playback. " + format));
+                _resumeHotkey = new ConfiguredHotkey("Resume",
+                    _hotkeyConfig.Bind("Hotkeys", "Resume", "2 | NumPad2", "Resume EDI playback. " + format));
+                _intensity40Hotkey = new ConfiguredHotkey("Intensity40",
+                    _hotkeyConfig.Bind("Hotkeys", "Intensity40", "3 | NumPad3", "Set EDI intensity to 40 percent. " + format));
+                _intensity100Hotkey = new ConfiguredHotkey("Intensity100",
+                    _hotkeyConfig.Bind("Hotkeys", "Intensity100", "4 | NumPad4", "Set EDI intensity to 100 percent. " + format));
+                _fillerHotkey = new ConfiguredHotkey("ActivateFiller",
+                    _hotkeyConfig.Bind("Hotkeys", "ActivateFiller", "5 | NumPad5", "Activate EDI filler playback. " + format));
+                TrackHotkeyConfigWriteTime();
+            }
+
+            private static bool ReloadHotkeyConfigIfChanged(bool force = false)
+            {
+                if (_hotkeyConfig is null) return false;
+                try
+                {
+                    var path = _hotkeyConfig.ConfigFilePath;
+                    if (!File.Exists(path)) return false;
+                    var writeTimeUtc = File.GetLastWriteTimeUtc(path);
+                    if (!force && writeTimeUtc <= _hotkeyConfigWriteTimeUtc) return false;
+                    _hotkeyConfig.Reload();
+                    _hotkeyConfigWriteTimeUtc = writeTimeUtc;
+                    _log?.Invoke("EDI hotkey configuration reloaded.");
+                    return true;
+                }
+                catch (Exception exception)
+                {
+                    _log?.Invoke($"Could not reload EDI hotkeys: {exception.Message}");
+                    return false;
+                }
+            }
+
+            private static void TrackHotkeyConfigWriteTime()
+            {
+                if (_hotkeyConfig is null || !File.Exists(_hotkeyConfig.ConfigFilePath)) return;
+                _hotkeyConfigWriteTimeUtc = File.GetLastWriteTimeUtc(_hotkeyConfig.ConfigFilePath);
+            }
+
+            private static int[] ParseVirtualKeys(string value, out string[] invalidTokens)
+            {
+                var keys = new HashSet<int>();
+                var invalid = new List<string>();
+                if (!string.IsNullOrWhiteSpace(value) &&
+                    !value.Trim().Equals("None", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (var item in value.Split(new[] { '|', ',', ';' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var token = item.Trim();
+                        if (TryParseVirtualKey(token, out var key)) keys.Add(key);
+                        else if (token.Length > 0) invalid.Add(token);
+                    }
+                }
+                invalidTokens = invalid.ToArray();
+                return keys.ToArray();
+            }
+
+            private static bool TryParseVirtualKey(string token, out int key)
+            {
+                key = 0;
+                if (token.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+                    int.TryParse(token.Substring(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out key))
+                    return key is > 0 and < 0xFF;
+                if (token.Length == 1)
+                {
+                    var character = char.ToUpperInvariant(token[0]);
+                    if (character is >= 'A' and <= 'Z' or >= '0' and <= '9')
+                    {
+                        key = character;
+                        return true;
+                    }
+                }
+                var normalized = token.Replace("_", string.Empty).Replace("-", string.Empty).ToUpperInvariant();
+                if (normalized.Length == 2 && normalized[0] == 'D' && char.IsDigit(normalized[1]))
+                {
+                    key = normalized[1];
+                    return true;
+                }
+                if (normalized.StartsWith("NUMPAD", StringComparison.Ordinal) && normalized.Length == 7 &&
+                    char.IsDigit(normalized[6]))
+                {
+                    key = 0x60 + normalized[6] - '0';
+                    return true;
+                }
+                if (normalized.StartsWith("F", StringComparison.Ordinal) &&
+                    int.TryParse(normalized.Substring(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out var function) &&
+                    function is >= 1 and <= 24)
+                {
+                    key = 0x70 + function - 1;
+                    return true;
+                }
+                key = normalized switch
+                {
+                    "BACKSPACE" => 0x08,
+                    "TAB" => 0x09,
+                    "ENTER" or "RETURN" => 0x0D,
+                    "SHIFT" => 0x10,
+                    "CTRL" or "CONTROL" => 0x11,
+                    "ALT" => 0x12,
+                    "PAUSE" or "BREAK" => 0x13,
+                    "CAPSLOCK" => 0x14,
+                    "ESC" or "ESCAPE" => 0x1B,
+                    "SPACE" => 0x20,
+                    "PAGEUP" => 0x21,
+                    "PAGEDOWN" => 0x22,
+                    "END" => 0x23,
+                    "HOME" => 0x24,
+                    "LEFT" => 0x25,
+                    "UP" => 0x26,
+                    "RIGHT" => 0x27,
+                    "DOWN" => 0x28,
+                    "PRINTSCREEN" => 0x2C,
+                    "INSERT" => 0x2D,
+                    "DELETE" => 0x2E,
+                    "NUMLOCK" => 0x90,
+                    "SCROLLLOCK" => 0x91,
+                    _ => 0
+                };
+                if (key > 0) return true;
+                return int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out key) &&
+                       key is > 0 and < 0xFF;
+            }
+
+            private sealed class ConfiguredHotkey
+            {
+                private readonly string _name;
+                private readonly ConfigEntry<string> _entry;
+                private string _parsedValue = "\0";
+                private int[] _virtualKeys = [];
+
+                public ConfiguredHotkey(string name, ConfigEntry<string> entry)
+                {
+                    _name = name;
+                    _entry = entry;
+                }
+
+                public bool IsDown()
+                {
+                    Refresh();
+                    return _virtualKeys.Any(key => (GetAsyncKeyState(key) & 0x8000) != 0);
+                }
+
+                private void Refresh()
+                {
+                    var value = _entry.Value ?? string.Empty;
+                    if (value.Equals(_parsedValue, StringComparison.Ordinal)) return;
+                    _parsedValue = value;
+                    _virtualKeys = ParseVirtualKeys(value, out var invalidTokens);
+                    if (invalidTokens.Length > 0)
+                        _log?.Invoke($"EDI hotkey {_name} ignored invalid key(s): {string.Join(", ", invalidTokens)}");
+                }
+            }
 
             private void DisableHotkeys(Exception exception)
             {
@@ -710,6 +897,7 @@ public sealed class UnityModScaffolder
             private void OnApplicationFocus(bool hasFocus)
             {
                 _hasFocus = hasFocus;
+                if (hasFocus) ReloadHotkeyConfigIfChanged(force: true);
                 SyncHotkeyState();
                 if (!hasFocus) StopAllMappedPlayback("application-focus-lost", preserveSceneAction: true);
                 else
@@ -1866,6 +2054,7 @@ public sealed class UnityModScaffolder
         internal static class GamePreset
         {
             public const string TelemetryFileName = "{{pluginGuid}}.telemetry.tsv";
+            public const string HotkeyConfigFileName = "{{pluginGuid}}.cfg";
             private const bool MatchScenes = {{matchScenes.ToString().ToLowerInvariant()}};
             private const bool MatchAnimations = {{matchAnimations.ToString().ToLowerInvariant()}};
             private static readonly Dictionary<string, string> ConventionActions = new(StringComparer.OrdinalIgnoreCase)
@@ -2202,8 +2391,10 @@ public sealed class UnityModScaffolder
         4. Install only `bin\Release\{{targetFramework}}\IntegrationMod.dll` into a dedicated `BepInEx\plugins` folder.
         5. Start EDI, run the game, and watch discovery telemetry in the studio.
 
-        Playback hotkeys (top row or numpad): `1` pause, `2` resume, `3` intensity 40%, `4` intensity 100%,
-        `5` activate filler.
+        Playback hotkeys default to: `1` pause, `2` resume, `3` intensity 40%, `4` intensity 100%, and `5`
+        activate filler, with matching numpad alternatives. Change them in `BepInEx\config\{{Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(telemetryFile))}}.cfg`
+        under `[Hotkeys]`. Use names such as `F6`, `NumPad5`, `Space`, or `A`; separate alternatives with `|`; use `None`
+        to disable a binding. External edits reload within about one second and whenever the game regains focus.
 
         Runtime discovery records scene changes, Animator and Legacy Animation states, PlayableDirector/Timeline assets,
         Mono Spine tracks, and PlayMaker FSM states when available in:

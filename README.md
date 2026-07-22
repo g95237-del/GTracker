@@ -127,7 +127,7 @@ Mono `.NET 3.5` Unity profiles are detected but are not supported by the current
 
 ### Generated Plugin
 
-Top-row and numpad keys work while the game has focus:
+Generated plugins create `BepInEx\config\<plugin-guid>.cfg`. Edit its `[Hotkeys]` entries with names such as `F6`, `NumPad5`, `Space`, or `A`; separate alternative keys with `|`, or use `None` to disable a binding. Changes reload within about one second while the game is running. Defaults are:
 
 | Key | Action |
 | --- | --- |
