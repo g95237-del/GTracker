@@ -107,7 +107,7 @@ public sealed class UnityModScaffolder
             Preset = preset.ToString(),
             TelemetryFile = telemetryFile,
             GeneratedAt = DateTimeOffset.UtcNow,
-            Actions = project.Actions.Select(action => action.Name).ToArray(),
+            Actions = project.GetLogicalActions().Select(action => action.Name).ToArray(),
             Frameworks = frameworks.Select(framework => framework.Id).ToArray()
         };
         files[ManifestFileName] = JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true });
@@ -155,7 +155,7 @@ public sealed class UnityModScaffolder
             CreateActionNames(project), cancellationToken);
         manifest.Project = project.Name;
         manifest.Preset = preset.ToString();
-        manifest.Actions = project.Actions.Select(action => action.Name).ToArray();
+        manifest.Actions = project.GetLogicalActions().Select(action => action.Name).ToArray();
         manifest.GeneratedAt = DateTimeOffset.UtcNow;
         await ReplaceFileAsync(Path.Combine(projectDirectory, ManifestFileName),
             JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }), cancellationToken);
@@ -210,7 +210,22 @@ public sealed class UnityModScaffolder
 
     private static void ValidateProjectActions(StudioProject project)
     {
-        var duplicateNames = project.Actions
+        var definitionGroups = project.Actions.GroupBy(action => action.DefinitionId).ToArray();
+        if (definitionGroups.Any(group => group.Key == Guid.Empty))
+            throw new InvalidDataException("Every scene rendition must have a logical DefinitionId.");
+        foreach (var group in definitionGroups)
+        {
+            var definition = group.First();
+            if (group.Skip(1).Any(rendition =>
+                    !rendition.Name.Equals(definition.Name, StringComparison.Ordinal) ||
+                    !rendition.FileName.Equals(definition.FileName, StringComparison.Ordinal) ||
+                    rendition.Type != definition.Type || rendition.Loop != definition.Loop ||
+                    rendition.DurationMilliseconds != definition.DurationMilliseconds ||
+                    !rendition.Description.Equals(definition.Description, StringComparison.Ordinal)))
+                throw new InvalidDataException($"Renditions for logical scene '{definition.Name}' have conflicting definition metadata.");
+        }
+
+        var duplicateNames = definitionGroups.Select(group => group.First())
             .GroupBy(action => action.Name, StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() > 1)
             .Select(group => group.Key)
@@ -2041,10 +2056,11 @@ public sealed class UnityModScaffolder
 
     private static string CreateGamePreset(StudioProject project, string pluginGuid, UnityModPresetKind preset)
     {
-        var actionIdentifiers = CreateActionIdentifiers(project.Actions);
+        var logicalActions = project.GetLogicalActions();
+        var actionIdentifiers = CreateActionIdentifiers(logicalActions);
         var conventionEntries = new StringBuilder();
         var reactionEntries = new StringBuilder();
-        var conventionActions = project.Actions
+        var conventionActions = logicalActions
             .GroupBy(action => NormalizeMatchName(action.Name), StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() == 1)
             .Select(group => group.Single());
@@ -2056,13 +2072,13 @@ public sealed class UnityModScaffolder
                 .Append(actionIdentifiers[action.Name])
                 .AppendLine(",");
         }
-        foreach (var action in project.Actions.Where(action => action.Type == EdiGalleryType.Reaction))
+        foreach (var action in logicalActions.Where(action => action.Type == EdiGalleryType.Reaction))
         {
             reactionEntries.Append("        ActionNames.")
                 .Append(actionIdentifiers[action.Name])
                 .AppendLine(",");
         }
-        var actions = project.Actions.ToDictionary(action => action.Name, StringComparer.OrdinalIgnoreCase);
+        var actions = logicalActions.ToDictionary(action => action.Name, StringComparer.OrdinalIgnoreCase);
         var mappings = project.Game.TriggerMappings
             .Where(mapping => !string.IsNullOrWhiteSpace(mapping.Candidate) && actions.ContainsKey(mapping.ActionName))
             .GroupBy(mapping => $"{mapping.Kind}:{NormalizeMatchName(mapping.Candidate)}:{mapping.ObjectPath}:" +
@@ -2362,9 +2378,10 @@ public sealed class UnityModScaffolder
 
     private static string CreateActionNames(StudioProject project)
     {
-        var actionIdentifiers = CreateActionIdentifiers(project.Actions);
+        var logicalActions = project.GetLogicalActions();
+        var actionIdentifiers = CreateActionIdentifiers(logicalActions);
         var builder = new StringBuilder("public static class ActionNames\n{\n");
-        foreach (var action in project.Actions)
+        foreach (var action in logicalActions)
         {
             builder.Append("    public const string ")
                 .Append(actionIdentifiers[action.Name])
@@ -2372,7 +2389,7 @@ public sealed class UnityModScaffolder
                 .Append(CSharpLiteral(action.Name))
                 .AppendLine(";");
         }
-        if (project.Actions.Count == 0) builder.AppendLine("    public const string Example = \"replace-me\";");
+        if (logicalActions.Count == 0) builder.AppendLine("    public const string Example = \"replace-me\";");
         return builder.AppendLine("}").ToString();
     }
 

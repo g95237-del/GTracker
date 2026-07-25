@@ -92,6 +92,7 @@ public partial class MainWindow : Window
     private int _projectGeneration;
     private int _telemetryLineCount;
     private string _watchedTelemetryPath = string.Empty;
+    private string _activeVariant = "default";
     private double _playbackRate = 1;
 
     public MainWindow()
@@ -394,23 +395,166 @@ public partial class MainWindow : Window
         SimulatorOverlay.ApplyLayout(_project.Game.Simulator);
         SimulatorCheck.IsChecked = _project.Game.Simulator.IsVisible;
         SimulatorOverlay.Visibility = _project.Game.Simulator.IsVisible ? Visibility.Visible : Visibility.Collapsed;
+        RefreshVariantWorkspaces();
         RefreshActionList();
         _updatingUi = false;
         ResetActionEditor();
     }
 
+    private void RefreshVariantWorkspaces(string? preferred = null)
+    {
+        var wasUpdating = _updatingUi;
+        _updatingUi = true;
+        var variants = _project.GetVariants().ToArray();
+        var requested = string.IsNullOrWhiteSpace(preferred) ? _activeVariant : EdiValidator.NormalizeVariant(preferred);
+        _activeVariant = variants.FirstOrDefault(variant => variant.Equals(requested, StringComparison.OrdinalIgnoreCase))
+            ?? variants[0];
+        VariantWorkspaceCombo.ItemsSource = null;
+        VariantWorkspaceCombo.ItemsSource = variants;
+        VariantWorkspaceCombo.SelectedItem = variants.First(variant =>
+            variant.Equals(_activeVariant, StringComparison.OrdinalIgnoreCase));
+        _updatingUi = wasUpdating;
+    }
+
     private void RefreshActionList(Guid? selectId = null)
     {
+        var wasUpdating = _updatingUi;
         _updatingUi = true;
         var previousTelemetryAction = (TelemetryActionCombo.SelectedItem as AuthoredAction)?.Name;
-        var orderedActions = _project.Actions.OrderBy(action => action.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+        var orderedActions = _project.Actions
+            .Where(action => EdiValidator.NormalizeVariant(action.Variant)
+                .Equals(_activeVariant, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(action => action.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var logicalActions = _project.GetLogicalActions()
+            .OrderBy(action => action.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
         ActionList.ItemsSource = null;
         ActionList.ItemsSource = orderedActions;
-        ActionList.SelectedItem = selectId is null ? null : _project.Actions.FirstOrDefault(action => action.Id == selectId);
-        TelemetryActionCombo.ItemsSource = orderedActions;
-        TelemetryActionCombo.SelectedItem = orderedActions.FirstOrDefault(action =>
-            action.Name.Equals(previousTelemetryAction, StringComparison.OrdinalIgnoreCase)) ?? orderedActions.FirstOrDefault();
-        _updatingUi = false;
+        ActionList.SelectedItem = selectId is null ? null : orderedActions.FirstOrDefault(action => action.Id == selectId);
+        TelemetryActionCombo.ItemsSource = logicalActions;
+        TelemetryActionCombo.SelectedItem = logicalActions.FirstOrDefault(action =>
+            action.Name.Equals(previousTelemetryAction, StringComparison.OrdinalIgnoreCase)) ?? logicalActions.FirstOrDefault();
+        _updatingUi = wasUpdating;
+    }
+
+    private void VariantWorkspaceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_updatingUi || VariantWorkspaceCombo.SelectedItem is not string variant) return;
+        if (_workingClip is not null && MessageBox.Show(this,
+                "Switching workspaces clears the current scene clip and any unsaved curve edits. Continue?",
+                "Switch workspace", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+        {
+            _updatingUi = true;
+            VariantWorkspaceCombo.SelectedItem = _project.GetVariants().First(item =>
+                item.Equals(_activeVariant, StringComparison.OrdinalIgnoreCase));
+            _updatingUi = false;
+            return;
+        }
+        _activeVariant = variant;
+        _actionLoadCancellation?.Cancel();
+        _actionLoadCancellation?.Dispose();
+        _actionLoadCancellation = null;
+        ClearWorkingClipForWorkspaceSwitch();
+        RefreshActionList();
+        ResetActionEditor();
+        SetStatus($"Workspace '{_activeVariant}' selected.");
+    }
+
+    private async void CloneVariant_Click(object sender, RoutedEventArgs e)
+    {
+        var projectGeneration = Volatile.Read(ref _projectGeneration);
+        if (_projectDirectory is null || Volatile.Read(ref _projectTransitionRunning) != 0)
+        {
+            SetStatus("Create or open a project before cloning a workspace.", true);
+            return;
+        }
+
+        var targetVariant = EdiValidator.NormalizeVariant(NewVariantText.Text);
+        var sourceVariant = _activeVariant;
+        var selectedSourceId = (ActionList.SelectedItem as AuthoredAction)?.Id;
+        if (!EdiValidator.IsSafeVariant(targetVariant))
+        {
+            SetStatus("The new workspace must use one safe EDI folder name and cannot be 'None'.", true);
+            return;
+        }
+
+        var lockTaken = false;
+        try
+        {
+            await _projectOperationGate.WaitAsync();
+            lockTaken = true;
+            if (projectGeneration != Volatile.Read(ref _projectGeneration) ||
+                Volatile.Read(ref _projectTransitionRunning) != 0) return;
+            var targetExists = _project.GetVariants().Any(variant =>
+                variant.Equals(targetVariant, StringComparison.OrdinalIgnoreCase));
+            AuthoredAction[] sourceActions;
+            if (targetExists)
+            {
+                var source = selectedSourceId is { } id
+                    ? _project.Actions.FirstOrDefault(action => action.Id == id &&
+                        EdiValidator.NormalizeVariant(action.Variant).Equals(sourceVariant, StringComparison.OrdinalIgnoreCase))
+                    : null;
+                if (source is null)
+                {
+                    SetStatus($"Select a scene in '{sourceVariant}' to add its rendition to existing workspace '{targetVariant}'.", true);
+                    return;
+                }
+                if (_project.Actions.Any(action => action.DefinitionId == source.DefinitionId &&
+                    EdiValidator.NormalizeVariant(action.Variant).Equals(targetVariant, StringComparison.OrdinalIgnoreCase)))
+                {
+                    SetStatus($"'{source.Name}' already has a rendition in workspace '{targetVariant}'.", true);
+                    return;
+                }
+                sourceActions = [source];
+            }
+            else
+            {
+                sourceActions = _project.Actions.Where(action => EdiValidator.NormalizeVariant(action.Variant)
+                    .Equals(sourceVariant, StringComparison.OrdinalIgnoreCase)).ToArray();
+                if (sourceActions.Length == 0)
+                {
+                    SetStatus($"Workspace '{sourceVariant}' has no scenes to clone.", true);
+                    return;
+                }
+            }
+            var clones = sourceActions.Select(source =>
+            {
+                var clone = CloneAction(source);
+                clone.Id = Guid.NewGuid();
+                clone.Variant = targetVariant;
+                clone.IsLocked = false;
+                return clone;
+            }).ToArray();
+            var candidate = CloneProject(_project.Actions.Concat(clones), _project.Bundles);
+            if (!targetExists) candidate.Variants.Add(targetVariant);
+            var errors = _validator.Validate(candidate)
+                .Where(issue => issue.Severity == ValidationSeverity.Error)
+                .ToArray();
+            if (errors.Length > 0)
+            {
+                ShowValidation(errors);
+                return;
+            }
+            await _projectStore.SaveAsync(_projectDirectory, candidate);
+            var displayedVariant = _activeVariant;
+            var displayedActionId = _editingActionId;
+            _project = candidate;
+            RefreshVariantWorkspaces(displayedVariant);
+            RefreshActionList(displayedActionId);
+            NewVariantText.Text = string.Empty;
+            SetStatus(targetExists
+                ? $"Added the '{sourceActions[0].Name}' rendition to workspace '{targetVariant}'."
+                : $"Cloned {clones.Length} scene rendition(s) from '{sourceVariant}' into '{targetVariant}'.");
+        }
+        catch (Exception exception)
+        {
+            SetStatus($"Could not clone workspace: {exception.Message}", true);
+        }
+        finally
+        {
+            if (lockTaken) _projectOperationGate.Release();
+        }
     }
 
     private void RefreshWindows_Click(object sender, RoutedEventArgs e) => RefreshWindows();
@@ -725,6 +869,24 @@ public partial class MainWindow : Window
         PlayClipButton.Content = "Play clip";
         PreviewModeText.Text = "LIVE PREVIEW";
         if (_latestPreviewFrame is { } latest) PreviewImage.Source = CreateBitmap(latest.Data);
+    }
+
+    private void ClearWorkingClipForWorkspaceSwitch()
+    {
+        _reviewMode = false;
+        _clipTimer.Stop();
+        _clipPlaybackClock.Reset();
+        _workingClip = null;
+        _workingClipStartedAtUtc = null;
+        _workingClipEndedAtUtc = null;
+        _playFromMilliseconds = 0;
+        _trimInMilliseconds = 0;
+        _trimOutMilliseconds = 0;
+        PlayClipButton.Content = "Play clip";
+        ClipSlider.Value = 0;
+        ClipSlider.Maximum = 1;
+        PreviewModeText.Text = "LIVE PREVIEW";
+        PreviewImage.Source = _latestPreviewFrame is { } latest ? CreateBitmap(latest.Data) : null;
     }
 
     private void PlayClip_Click(object sender, RoutedEventArgs e)
@@ -1245,9 +1407,11 @@ public partial class MainWindow : Window
     private void ApplyRuntimeName(string candidate)
     {
         candidate = candidate.Trim();
+        var definitionId = GetCurrentScene()?.DefinitionId;
         var displayName = candidate;
         var suffix = 2;
         while (_project.Actions.Any(action => action.Id != _editingActionId &&
+               (definitionId is null || action.DefinitionId != definitionId) &&
                action.Name.Equals(displayName, StringComparison.OrdinalIgnoreCase)))
             displayName = $"{candidate} {suffix++}";
 
@@ -1255,6 +1419,7 @@ public partial class MainWindow : Window
         var fileStem = baseStem;
         suffix = 2;
         while (_project.Actions.Any(action => action.Id != _editingActionId &&
+               (definitionId is null || action.DefinitionId != definitionId) &&
                action.FileName.Equals(fileStem, StringComparison.OrdinalIgnoreCase)))
             fileStem = $"{baseStem}-{suffix++}";
         ActionNameText.Text = displayName;
@@ -1291,7 +1456,7 @@ public partial class MainWindow : Window
     {
         ActionList.SelectedItem = null;
         ResetActionEditor();
-        var next = $"scene-{_project.Actions.Count + 1}";
+        var next = $"scene-{_project.GetLogicalActions().Count + 1}";
         ActionNameText.Text = next;
         FileNameText.Text = next;
         UpdateRuntimeCorrelation(autoApplyName: true);
@@ -1314,7 +1479,7 @@ public partial class MainWindow : Window
         _correlatedAnimationCandidates = [];
         _pendingCapturedTriggerMapping = null;
         ResetActionEditor();
-        var next = $"scene-{_project.Actions.Count + 1}";
+        var next = $"scene-{_project.GetLogicalActions().Count + 1}";
         ActionNameText.Text = next;
         FileNameText.Text = next;
     }
@@ -1327,7 +1492,7 @@ public partial class MainWindow : Window
         ActionNameText.Text = "new-scene";
         FileNameText.Text = "new-scene";
         ActionTypeCombo.SelectedItem = EdiGalleryType.Gallery;
-        VariantText.Text = "default";
+        VariantText.Text = _activeVariant;
         LoopCheck.IsChecked = true;
         DescriptionText.Text = string.Empty;
         _workingTracks.Clear();
@@ -1450,25 +1615,29 @@ public partial class MainWindow : Window
         {
             if (projectGeneration != Volatile.Read(ref _projectGeneration) ||
                 Volatile.Read(ref _projectTransitionRunning) != 0) return;
-            var candidate = CloneProject(
-                _project.Actions.Where(item => item.Id != action.Id),
-                _project.Bundles.Select(bundle => new BundleDefinition
-                {
-                    Name = bundle.Name,
-                    Actions = bundle.Actions.Where(name => !name.Equals(action.Name, StringComparison.OrdinalIgnoreCase)).ToList()
-                }));
-            candidate.Game.TriggerMappings.RemoveAll(mapping =>
-                mapping.ActionName.Equals(action.Name, StringComparison.OrdinalIgnoreCase));
+            var remainingActions = _project.Actions.Where(item => item.Id != action.Id).ToArray();
+            var removingDefinition = remainingActions.All(item => item.DefinitionId != action.DefinitionId);
+            var candidate = CloneProject(remainingActions, _project.Bundles);
+            if (removingDefinition)
+            {
+                foreach (var bundle in candidate.Bundles)
+                    bundle.Actions.RemoveAll(name => name.Equals(action.Name, StringComparison.OrdinalIgnoreCase));
+                candidate.Game.TriggerMappings.RemoveAll(mapping =>
+                    mapping.ActionName.Equals(action.Name, StringComparison.OrdinalIgnoreCase));
+            }
             await _projectStore.SaveAsync(_projectDirectory, candidate);
             _project = candidate;
-            if (!string.IsNullOrWhiteSpace(action.SourceClipPath))
+            if (!string.IsNullOrWhiteSpace(action.SourceClipPath) && !candidate.Actions.Any(item =>
+                    item.SourceClipPath.Equals(action.SourceClipPath, StringComparison.OrdinalIgnoreCase)))
             {
                 try { File.Delete(ResolveProjectAsset(action.SourceClipPath)); } catch (IOException) { }
             }
             RefreshActionList();
             UpdateTriggerMappingStatus();
             ResetActionEditor();
-            SetStatus($"Deleted '{action.Name}'.");
+            SetStatus(removingDefinition
+                ? $"Deleted logical scene '{action.Name}'."
+                : $"Deleted the '{action.Variant}' rendition of '{action.Name}'.");
         }
         catch (Exception exception)
         {
@@ -1583,10 +1752,11 @@ public partial class MainWindow : Window
             var action = new AuthoredAction
             {
                 Id = existing?.Id ?? Guid.NewGuid(),
+                DefinitionId = existing?.DefinitionId ?? Guid.NewGuid(),
                 Name = ActionNameText.Text,
                 FileName = FileNameText.Text,
                 Type = ActionTypeCombo.SelectedItem is EdiGalleryType type ? type : EdiGalleryType.Gallery,
-                Variant = VariantText.Text,
+                Variant = _activeVariant,
                 Loop = LoopCheck.IsChecked == true,
                 IsLocked = lockAfterSave,
                 Description = DescriptionText.Text,
@@ -1602,13 +1772,21 @@ public partial class MainWindow : Window
                 }).ToList()
             };
             action.SourceClipPath = $"clips/{action.Id:N}-{Guid.NewGuid():N}.ediclip";
-            var candidate = CloneProjectWith(action);
+            var candidate = CloneProjectWith(action, synchronizeDefinitionMetadata: true);
             var automaticMapping = _pendingCapturedTriggerMapping;
             if (existing is not null && !existing.Name.Equals(action.Name, StringComparison.OrdinalIgnoreCase))
             {
                 foreach (var mapping in candidate.Game.TriggerMappings.Where(mapping =>
                              mapping.ActionName.Equals(existing.Name, StringComparison.OrdinalIgnoreCase)))
                     mapping.ActionName = action.Name;
+                foreach (var bundle in candidate.Bundles)
+                {
+                    for (var index = 0; index < bundle.Actions.Count; index++)
+                    {
+                        if (bundle.Actions[index].Equals(existing.Name, StringComparison.OrdinalIgnoreCase))
+                            bundle.Actions[index] = action.Name;
+                    }
+                }
             }
             if (automaticMapping is not null)
                 candidate.Game.SetTriggerMapping(automaticMapping.Kind, automaticMapping.Candidate, action.Name,
@@ -1633,7 +1811,8 @@ public partial class MainWindow : Window
             }
             _project = candidate;
             if (existing is not null && !string.IsNullOrWhiteSpace(existing.SourceClipPath) &&
-                !existing.SourceClipPath.Equals(action.SourceClipPath, StringComparison.OrdinalIgnoreCase))
+                !existing.SourceClipPath.Equals(action.SourceClipPath, StringComparison.OrdinalIgnoreCase) &&
+                !candidate.Actions.Any(item => item.SourceClipPath.Equals(existing.SourceClipPath, StringComparison.OrdinalIgnoreCase)))
             {
                 try { File.Delete(ResolveProjectAsset(existing.SourceClipPath)); } catch (IOException) { }
             }
@@ -1701,7 +1880,7 @@ public partial class MainWindow : Window
     {
         ActionNameText.IsReadOnly = isLocked;
         FileNameText.IsReadOnly = isLocked;
-        VariantText.IsReadOnly = isLocked;
+        VariantText.IsReadOnly = true;
         DescriptionText.IsReadOnly = isLocked;
         ActionTypeCombo.IsEnabled = !isLocked;
         LoopCheck.IsEnabled = !isLocked;
@@ -1715,9 +1894,19 @@ public partial class MainWindow : Window
         SceneLockStatusText.Foreground = (Brush)FindResource(isLocked ? "WarningTextBrush" : "MutedTextBrush");
     }
 
-    private StudioProject CloneProjectWith(AuthoredAction action)
+    private StudioProject CloneProjectWith(AuthoredAction action, bool synchronizeDefinitionMetadata = false)
     {
         var actions = _project.Actions.Where(item => item.Id != action.Id).ToList();
+        if (synchronizeDefinitionMetadata)
+        {
+            for (var index = 0; index < actions.Count; index++)
+            {
+                if (actions[index].DefinitionId != action.DefinitionId) continue;
+                var rendition = CloneAction(actions[index]);
+                CopyDefinitionMetadata(action, rendition);
+                actions[index] = rendition;
+            }
+        }
         actions.Add(action);
         return CloneProject(actions, _project.Bundles);
     }
@@ -1725,6 +1914,7 @@ public partial class MainWindow : Window
     private static AuthoredAction CloneAction(AuthoredAction action) => new()
     {
         Id = action.Id,
+        DefinitionId = action.DefinitionId,
         Name = action.Name,
         FileName = action.FileName,
         Type = action.Type,
@@ -1744,6 +1934,15 @@ public partial class MainWindow : Window
             Points = track.Points.ToList()
         }).ToList()
     };
+
+    private static void CopyDefinitionMetadata(AuthoredAction source, AuthoredAction target)
+    {
+        target.Name = source.Name;
+        target.FileName = source.FileName;
+        target.Type = source.Type;
+        target.Loop = source.Loop;
+        target.Description = source.Description;
+    }
 
     private StudioProject CloneProject(IEnumerable<AuthoredAction> actions, IEnumerable<BundleDefinition> bundles)
     {
@@ -1785,8 +1984,13 @@ public partial class MainWindow : Window
                     RotationDegrees = _project.Game.Simulator.RotationDegrees
                 }
             },
+            Variants = _project.GetVariants().ToList(),
             Actions = actions.ToList(),
-            Bundles = bundles.ToList()
+            Bundles = bundles.Select(bundle => new BundleDefinition
+            {
+                Name = bundle.Name,
+                Actions = bundle.Actions.ToList()
+            }).ToList()
         };
     }
 
@@ -1832,7 +2036,7 @@ public partial class MainWindow : Window
         var issues = _validator.Validate(_project);
         if (issues.Count == 0)
         {
-            SetStatus($"Validation passed: {_project.Actions.Count} authored scene(s) are ready to export.");
+            SetStatus($"Validation passed: {_project.GetLogicalActions().Count} logical scene(s) across {_project.GetVariants().Count} workspace(s) are ready to export.");
             MessageBox.Show(this, "No EDI compatibility issues found.", "Validation", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
@@ -1858,21 +2062,17 @@ public partial class MainWindow : Window
             SetStatus("Save at least one scene before exporting.", true);
             return;
         }
-        var dialog = new OpenFolderDialog { Title = "Choose the EDI Gallery collection folder (for example simple or detailed)" };
+        var dialog = new OpenFolderDialog { Title = "Choose the EDI Gallery root folder that contains Definitions.csv and variant folders" };
         if (dialog.ShowDialog(this) != true) return;
         try
         {
-            var collectionDirectory = Path.GetFullPath(dialog.FolderName).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            var collectionName = Path.GetFileName(collectionDirectory);
-            var galleryDirectory = Directory.GetParent(collectionDirectory)?.FullName
-                ?? throw new InvalidOperationException("The selected collection folder must have a Gallery parent folder.");
-            if (collectionName.Equals("Gallery", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Select a collection subfolder such as Gallery\\simple or Gallery\\detailed, not Gallery itself.");
-            var exportProject = CreateCollectionExportProject(collectionName);
-            var result = await _exporter.ExportAsync(exportProject, galleryDirectory);
-            var removedLegacyFolder = OfferLegacyExportCleanup(collectionDirectory);
-            SetStatus($"Exported {result.ScriptCount} script(s) directly to '{collectionDirectory}'. Definitions.csv is in '{galleryDirectory}'." +
-                      (removedLegacyFolder ? " Removed the previous nested export folder." : string.Empty));
+            var galleryDirectory = Path.GetFullPath(dialog.FolderName)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (Directory.GetParent(galleryDirectory)?.Name.Equals("Gallery", StringComparison.OrdinalIgnoreCase) == true)
+                throw new InvalidOperationException("Select the Gallery root, not one of its variant subfolders.");
+            if (!await ReconcileManagedVariantsAsync(galleryDirectory)) return;
+            var result = await _exporter.ExportAsync(_project, galleryDirectory);
+            SetStatus($"Exported {result.DefinitionCount} definition(s) and {result.ScriptCount} script(s) across {_project.GetVariants().Count} workspace(s) to '{galleryDirectory}'.");
             if (result.Issues.Count > 0) ShowValidation(result.Issues);
         }
         catch (Exception exception)
@@ -1881,59 +2081,81 @@ public partial class MainWindow : Window
         }
     }
 
-    private bool OfferLegacyExportCleanup(string collectionDirectory)
+    private async Task<bool> ReconcileManagedVariantsAsync(string galleryDirectory)
     {
-        var legacyDirectory = Path.Combine(collectionDirectory, SafeDirectoryName(_project.Name) + "-Gallery");
-        var manifestPath = Path.Combine(legacyDirectory, ".edi-integration-studio-export.json");
-        if (!File.Exists(manifestPath)) return false;
+        var manifestPath = Path.Combine(galleryDirectory, ".edi-integration-studio-export.json");
+        if (!File.Exists(manifestPath)) return true;
+        using var manifest = JsonDocument.Parse(await File.ReadAllTextAsync(manifestPath));
+        if (!manifest.RootElement.TryGetProperty("ProjectId", out var projectId) ||
+            !Guid.TryParse(projectId.GetString(), out var owner)) return true;
+        if (!manifest.RootElement.TryGetProperty("Files", out var files) || files.ValueKind != JsonValueKind.Array)
+            return true;
+
+        var managedVariants = files.EnumerateArray()
+            .Select(item => item.GetString()?.Replace('\\', '/'))
+            .Where(path => path?.EndsWith(".funscript", StringComparison.OrdinalIgnoreCase) == true)
+            .Select(path => path!.Contains('/') ? path[..path.IndexOf('/')] : "default")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var projectGeneration = Volatile.Read(ref _projectGeneration);
+        await _projectOperationGate.WaitAsync();
         try
         {
-            using var manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
-            if (!manifest.RootElement.TryGetProperty("ProjectId", out var projectId) ||
-                !Guid.TryParse(projectId.GetString(), out var owner) || owner != _project.Id) return false;
-            if (MessageBox.Show(this,
-                    $"Remove the previous incorrectly nested export folder?{Environment.NewLine}{legacyDirectory}{Environment.NewLine}{Environment.NewLine}Choose No if you edited files inside it manually.",
-                    "Remove legacy nested export", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
-                return false;
-            Directory.Delete(legacyDirectory, recursive: true);
-            return true;
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
-        {
-            SetStatus($"Export succeeded, but the old nested folder could not be checked or removed: {exception.Message}", true);
-            return false;
-        }
-    }
+            if (projectGeneration != Volatile.Read(ref _projectGeneration) ||
+                Volatile.Read(ref _projectTransitionRunning) != 0) return false;
+            if (owner != _project.Id) return true;
+            var projectVariants = _project.GetVariants();
+            var removedVariants = managedVariants.Where(managed => !projectVariants.Any(projectVariant =>
+                projectVariant.Equals(managed, StringComparison.OrdinalIgnoreCase))).ToArray();
+            if (removedVariants.Length == 0) return true;
 
-    private StudioProject CreateCollectionExportProject(string collectionName)
-    {
-        var scenes = _project.Actions.Select(scene => new AuthoredAction
-        {
-            Id = scene.Id,
-            Name = scene.Name,
-            FileName = scene.FileName,
-            Type = scene.Type,
-            Loop = scene.Loop,
-            IsLocked = scene.IsLocked,
-            Description = scene.Description,
-            Variant = collectionName,
-            DurationMilliseconds = scene.DurationMilliseconds,
-            SourceClipPath = scene.SourceClipPath,
-            SourceStartedAtUtc = scene.SourceStartedAtUtc,
-            SourceEndedAtUtc = scene.SourceEndedAtUtc,
-            UnitySceneName = scene.UnitySceneName,
-            UnityAnimationName = scene.UnityAnimationName,
-            Tracks = scene.Tracks.Select(track => new ActionTrack
+            if (projectVariants.Count == 1 && projectVariants[0].Equals("default", StringComparison.OrdinalIgnoreCase) &&
+                managedVariants.Length == 1 && !managedVariants[0].Equals("default", StringComparison.OrdinalIgnoreCase))
             {
-                Axis = track.Axis,
-                Points = track.Points.ToList()
-            }).ToList()
-        }).ToList();
-        return CloneProject(scenes, _project.Bundles.Select(bundle => new BundleDefinition
+                var legacyVariant = managedVariants[0];
+                var choice = MessageBox.Show(this,
+                    $"This schema-one project was previously exported into workspace '{legacyVariant}', but old project files could not store that export choice.{Environment.NewLine}{Environment.NewLine}" +
+                    $"Choose Yes to relabel the project's default renditions as '{legacyVariant}' before exporting. Choose No to export as default and remove the previously managed '{legacyVariant}' scripts. Choose Cancel to stop.",
+                    "Reconcile legacy workspace", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
+                if (choice == MessageBoxResult.Cancel) return false;
+                if (choice == MessageBoxResult.Yes)
+                {
+                    if (_projectDirectory is null) return false;
+                    var actions = _project.Actions.Select(action =>
+                    {
+                        var rendition = CloneAction(action);
+                        rendition.Variant = legacyVariant;
+                        return rendition;
+                    }).ToArray();
+                    var candidate = CloneProject(actions, _project.Bundles);
+                    candidate.Variants = [legacyVariant];
+                    var errors = _validator.Validate(candidate)
+                        .Where(issue => issue.Severity == ValidationSeverity.Error)
+                        .ToArray();
+                    if (errors.Length > 0)
+                    {
+                        ShowValidation(errors);
+                        return false;
+                    }
+                    await _projectStore.SaveAsync(_projectDirectory, candidate);
+                    var selectedId = _editingActionId;
+                    _project = candidate;
+                    _activeVariant = legacyVariant;
+                    RefreshVariantWorkspaces(legacyVariant);
+                    RefreshActionList(selectedId);
+                    VariantText.Text = legacyVariant;
+                }
+                return true;
+            }
+
+            return MessageBox.Show(this,
+                $"Export will remove manifest-managed scripts for workspace(s) no longer present in this project: {string.Join(", ", removedVariants)}.{Environment.NewLine}{Environment.NewLine}Continue?",
+                "Remove managed workspaces", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+        }
+        finally
         {
-            Name = bundle.Name,
-            Actions = bundle.Actions.ToList()
-        }));
+            _projectOperationGate.Release();
+        }
     }
 
     private async void CheckEdi_Click(object sender, RoutedEventArgs e)

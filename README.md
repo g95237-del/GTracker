@@ -16,6 +16,7 @@ _Authoring workspace shown with a synthetic demo project and capture._
 - Maintains a memory-bounded JPEG pre-roll and captures configurable pre-roll/post-roll scenes.
 - Reviews, loops, scrubs, trims, and manually scripts all EDI axes on a 0-100 timeline.
 - Stores project metadata in `project.edi.json` and review frames in ZIP-packaged `.ediclip` assets.
+- Groups alternate script renditions into named workspaces while keeping one logical EDI definition and trigger mapping.
 - Validates scene names, file stems, durations, axes, points, loops, variants, bundles, and export collisions.
 - Exports EDI `Definitions.csv`, Funscript 1.0 files, separate axis files, optional bundles, and an automatic filler script.
 - Detects Unity Mono or IL2CPP, target framework, BepInEx flavor, optional animation frameworks, and build readiness.
@@ -77,13 +78,18 @@ Confirm the scene name, file stem, type, loop behavior, and tracks before using 
 
 ### Export Layout
 
-The selected collection folder name becomes the variant for every scene in that export. Definitions and export ownership data live in the parent `Gallery`; scripts live in the selected child:
+Use the **Workspace** selector above the scene library to edit one variant at a time. Enter a new safe folder name beside **Clone as**, then click **Clone** to create editable fallback renditions of every scene in the current workspace. To fill a scene added later, select it and enter an existing target workspace name; **Clone** adds only that missing rendition. Renditions share their logical scene name, filename, definition metadata, bundles, and Unity trigger mappings, but retain independent curves and lock state.
+
+Export selects the `Gallery` root and writes every workspace together. Each logical scene appears once in `Definitions.csv`, while each rendition is written beneath its workspace folder:
 
 ```text
 Gallery/
 |-- .edi-integration-studio-export.json
 |-- Definitions.csv
-`-- detailed/
+|-- detailed/
+|   |-- attack.funscript
+|   `-- filler.funscript
+`-- alternate/
     |-- attack.funscript
     `-- filler.funscript
 ```
@@ -94,7 +100,7 @@ When the project does not already supply or reserve `filler`, export adds this d
 filler,filler,0,1200,filler,true,
 ```
 
-The manifest manages files at the entire `Gallery` root. Re-exporting the same project may remove files from its previous collection when they become stale. Do not have different Studio projects manage the same `Gallery` root.
+The manifest manages files at the entire `Gallery` root. Re-exporting the same project removes previously managed files that became stale. Do not have different Studio projects manage the same `Gallery` root.
 
 ## Unity Setup Details
 
@@ -167,7 +173,7 @@ Do not publish project directories, `.ediclip` files, telemetry, `scaffold.json`
 - Review clips are JPEG sequences without audio, not standard video files.
 - The Studio does not infer per-scene motion curves automatically; authors draw the motion represented by each scene.
 - There is no point-selection model, timeline zoom, thumbnail strip, audio track, or visual bundle editor.
-- Interactive export uses one selected collection variant at a time.
+- Creating a new scene adds it only to the active workspace; clone or author matching renditions before relying on that scene in another EDI device variant.
 - Generic telemetry may require explicit mappings or a game-specific patch.
 - Automated tests cover core export, persistence, capture, telemetry, generated-source compilation, and deployment behavior, but not every WPF workflow or real game/runtime combination.
 

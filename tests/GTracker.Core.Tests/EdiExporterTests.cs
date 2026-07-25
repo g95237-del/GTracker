@@ -118,6 +118,54 @@ public sealed class EdiExporterTests
     }
 
     [Fact]
+    public async Task Export_WritesOneDefinitionAndOneScriptPerVariantForSharedRenditions()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            var definitionId = Guid.NewGuid();
+            var detailed = new AuthoredAction
+            {
+                DefinitionId = definitionId,
+                Name = "scene",
+                FileName = "scene",
+                Variant = "detailed",
+                DurationMilliseconds = 1000,
+                Tracks = [new ActionTrack { Points = [new(0, 20), new(1000, 20)] }]
+            };
+            var combined = new AuthoredAction
+            {
+                DefinitionId = definitionId,
+                Name = "scene",
+                FileName = "scene",
+                Variant = "G-MarieMoo",
+                DurationMilliseconds = 1000,
+                Tracks = [new ActionTrack { Points = [new(0, 80), new(1000, 80)] }]
+            };
+            var project = new StudioProject
+            {
+                Variants = ["detailed", "G-MarieMoo"],
+                Actions = [detailed, combined]
+            };
+
+            var result = await new EdiExporter().ExportAsync(project, directory);
+
+            Assert.Equal(2, result.DefinitionCount);
+            Assert.Equal(4, result.ScriptCount);
+            Assert.True(File.Exists(Path.Combine(directory, "detailed", "scene.funscript")));
+            Assert.True(File.Exists(Path.Combine(directory, "G-MarieMoo", "scene.funscript")));
+            var lines = (await File.ReadAllLinesAsync(Path.Combine(directory, "Definitions.csv")))
+                .Where(line => line.StartsWith("scene,", StringComparison.Ordinal))
+                .ToArray();
+            Assert.Single(lines);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task Export_UsesLegacyIntegerActionsWithoutMetadata()
     {
         var directory = CreateTemporaryDirectory();
@@ -278,6 +326,38 @@ public sealed class EdiExporterTests
             await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 new EdiExporter().ExportAsync(new StudioProject { Actions = [scene] }, directory));
             Assert.Equal("keep me", await File.ReadAllTextAsync(Path.Combine(directory, "scene.funscript")));
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task Export_RefusesNewCollisionMissingFromExistingManifest()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            var scene = new AuthoredAction
+            {
+                Name = "scene",
+                FileName = "scene",
+                Variant = "detailed",
+                Tracks = [new ActionTrack { Points = [new(0, 50), new(1000, 50)] }]
+            };
+            var project = new StudioProject { Actions = [scene] };
+            var exporter = new EdiExporter();
+            await exporter.ExportAsync(project, directory);
+            var manuallyOwned = Path.Combine(directory, "intense", "scene.funscript");
+            Directory.CreateDirectory(Path.GetDirectoryName(manuallyOwned)!);
+            await File.WriteAllTextAsync(manuallyOwned, "keep me");
+            scene.Variant = "intense";
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => exporter.ExportAsync(project, directory));
+
+            Assert.Equal("keep me", await File.ReadAllTextAsync(manuallyOwned));
+            Assert.True(File.Exists(Path.Combine(directory, "detailed", "scene.funscript")));
         }
         finally
         {

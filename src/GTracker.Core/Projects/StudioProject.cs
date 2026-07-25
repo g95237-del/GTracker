@@ -44,7 +44,7 @@ public enum UnityTriggerKind
 
 public sealed class StudioProject
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -52,8 +52,27 @@ public sealed class StudioProject
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public GameTarget Game { get; set; } = new();
+    public List<string> Variants { get; set; } = [];
     public List<AuthoredAction> Actions { get; set; } = [];
     public List<BundleDefinition> Bundles { get; set; } = [];
+
+    public IReadOnlyList<AuthoredAction> GetLogicalActions() => Actions
+        .GroupBy(action => action.DefinitionId)
+        .Select(group => group.First())
+        .ToArray();
+
+    public IReadOnlyList<string> GetVariants()
+    {
+        var variants = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var value in Variants.Concat(Actions.Select(action => action.Variant)))
+        {
+            var variant = string.IsNullOrWhiteSpace(value) ? "default" : value.Trim();
+            if (seen.Add(variant)) variants.Add(variant);
+        }
+        if (variants.Count == 0) variants.Add("default");
+        return variants;
+    }
 }
 
 public sealed class GameTarget
@@ -122,6 +141,7 @@ public sealed class LinearSimulatorLayout
 public sealed class AuthoredAction
 {
     public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid DefinitionId { get; set; } = Guid.NewGuid();
     public string Name { get; set; } = "new-action";
     public string FileName { get; set; } = "new-action";
     public EdiGalleryType Type { get; set; } = EdiGalleryType.Gallery;

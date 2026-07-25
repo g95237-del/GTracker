@@ -101,6 +101,14 @@
                                 <Button x:Name="DeleteActionButton" Content="Delete" Click="DeleteAction_Click"/>
                             </StackPanel>
                         </DockPanel>
+                        <WrapPanel Margin="3,2">
+                            <TextBlock Text="Workspace" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                            <ComboBox x:Name="VariantWorkspaceCombo" Width="120" SelectionChanged="VariantWorkspaceCombo_SelectionChanged"/>
+                            <TextBlock Text="Clone as" VerticalAlignment="Center" Margin="10,0,4,0"/>
+                            <TextBox x:Name="NewVariantText" Width="115" ToolTip="Safe EDI folder name, for example G-MarieMoo"/>
+                            <Button Content="Clone" Click="CloneVariant_Click" Padding="7,2"
+                                    ToolTip="Clone every scene into a new workspace, or clone the selected scene into an existing workspace where it is missing"/>
+                        </WrapPanel>
                         <ListBox x:Name="ActionList" Height="108" SelectionChanged="ActionList_SelectionChanged" Margin="3"/>
 
                         <TextBlock Text="CAPTURE SCENE" Style="{StaticResource SectionHeaderStyle}" Margin="3,10,3,2"/>
@@ -137,8 +145,8 @@
                             <TextBox Grid.Row="0" Grid.Column="3" x:Name="FileNameText" Text="new-scene"/>
                             <TextBlock Grid.Row="1" Text="Type" VerticalAlignment="Center"/>
                             <ComboBox Grid.Row="1" Grid.Column="1" x:Name="ActionTypeCombo"/>
-                            <TextBlock Grid.Row="1" Grid.Column="2" Text="Variant" VerticalAlignment="Center"/>
-                            <TextBox Grid.Row="1" Grid.Column="3" x:Name="VariantText" Text="default"/>
+                            <TextBlock Grid.Row="1" Grid.Column="2" Text="Workspace" VerticalAlignment="Center"/>
+                            <TextBox Grid.Row="1" Grid.Column="3" x:Name="VariantText" Text="default" IsReadOnly="True"/>
                             <TextBlock Grid.Row="2" Text="Axis" VerticalAlignment="Center"/>
                             <ComboBox Grid.Row="2" Grid.Column="1" x:Name="AxisCombo" SelectionChanged="AxisCombo_SelectionChanged"/>
                             <CheckBox Grid.Row="2" Grid.Column="2" Grid.ColumnSpan="2" x:Name="LoopCheck" Content="Clean loop" IsChecked="True" VerticalAlignment="Center"/>

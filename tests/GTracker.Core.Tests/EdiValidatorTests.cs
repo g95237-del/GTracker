@@ -59,6 +59,60 @@ public sealed class EdiValidatorTests
                                          issue.Message.Contains("only 25 ms"));
     }
 
+    [Fact]
+    public void Validate_AllowsMatchingRenditionsAcrossVariants()
+    {
+        var definitionId = Guid.NewGuid();
+        var detailed = CreateAction("scene", "scene");
+        detailed.DefinitionId = definitionId;
+        detailed.Variant = "detailed";
+        var combined = CreateAction("scene", "scene");
+        combined.DefinitionId = definitionId;
+        combined.Variant = "G-MarieMoo";
+
+        var issues = new EdiValidator().Validate(new StudioProject
+        {
+            Variants = ["detailed", "G-MarieMoo"],
+            Actions = [detailed, combined]
+        });
+
+        Assert.DoesNotContain(issues, issue => issue.Severity == ValidationSeverity.Error);
+    }
+
+    [Fact]
+    public void Validate_RejectsConflictingDefinitionMetadataAndDuplicateRenditions()
+    {
+        var definitionId = Guid.NewGuid();
+        var first = CreateAction("scene", "scene");
+        first.DefinitionId = definitionId;
+        var conflicting = CreateAction("renamed", "scene");
+        conflicting.DefinitionId = definitionId;
+
+        var issues = new EdiValidator().Validate(new StudioProject { Actions = [first, conflicting] });
+
+        Assert.Contains(issues, issue => issue.Severity == ValidationSeverity.Error &&
+                                         issue.Message.Contains("same name"));
+        Assert.Contains(issues, issue => issue.Severity == ValidationSeverity.Error &&
+                                         issue.Message.Contains("already has a rendition"));
+    }
+
+    [Fact]
+    public void Validate_WarnsWhenDefinitionIsMissingFromAWorkspace()
+    {
+        var scene = CreateAction("scene", "scene");
+        scene.Variant = "detailed";
+        var project = new StudioProject
+        {
+            Variants = ["detailed", "alternate"],
+            Actions = [scene]
+        };
+
+        var issues = new EdiValidator().Validate(project);
+
+        Assert.Contains(issues, issue => issue.Severity == ValidationSeverity.Warning &&
+                                         issue.Message.Contains("alternate"));
+    }
+
     private static AuthoredAction CreateAction(string name, string fileName) => new()
     {
         Name = name,

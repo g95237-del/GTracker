@@ -738,6 +738,79 @@ public sealed class UnityToolingTests
         }
     }
 
+    [Fact]
+    public async Task Scaffold_DeduplicatesVariantRenditionsByLogicalDefinition()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            var definitionId = Guid.NewGuid();
+            var project = new StudioProject
+            {
+                Actions =
+                [
+                    new AuthoredAction
+                    {
+                        DefinitionId = definitionId,
+                        Name = "enemy-hit",
+                        FileName = "enemy-hit",
+                        Variant = "detailed"
+                    },
+                    new AuthoredAction
+                    {
+                        DefinitionId = definitionId,
+                        Name = "enemy-hit",
+                        FileName = "enemy-hit",
+                        Variant = "G-MarieMoo"
+                    }
+                ]
+            };
+            var inspection = new UnityInspectionResult(Path.Combine(directory, "Game.exe"), UnityRuntimeKind.Mono,
+                "Amd64", Path.Combine(directory, "Game_Data"), []);
+            var output = Path.Combine(directory, "mod");
+
+            await new UnityModScaffolder().GenerateAsync(project, inspection, output);
+
+            var actionNames = await File.ReadAllTextAsync(Path.Combine(output, "ActionNames.cs"));
+            Assert.Equal(1, actionNames.Split("public const string EnemyHit", StringSplitOptions.None).Length - 1);
+            await using var stream = File.OpenRead(Path.Combine(output, UnityModScaffolder.ManifestFileName));
+            using var manifest = await JsonDocument.ParseAsync(stream);
+            Assert.Equal(["enemy-hit"], manifest.RootElement.GetProperty("Actions")
+                .EnumerateArray().Select(item => item.GetString()!).ToArray());
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task Scaffold_RejectsConflictingLogicalDefinitionRenditions()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            var definitionId = Guid.NewGuid();
+            var project = new StudioProject
+            {
+                Actions =
+                [
+                    new AuthoredAction { DefinitionId = definitionId, Name = "first", FileName = "scene", Variant = "detailed" },
+                    new AuthoredAction { DefinitionId = definitionId, Name = "second", FileName = "scene", Variant = "alternate" }
+                ]
+            };
+            var inspection = new UnityInspectionResult(Path.Combine(directory, "Game.exe"), UnityRuntimeKind.Mono,
+                "Amd64", Path.Combine(directory, "Game_Data"), []);
+
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                new UnityModScaffolder().GenerateAsync(project, inspection, Path.Combine(directory, "mod")));
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
     private static string CreateTemporaryDirectory()
     {
         var path = Path.Combine(Path.GetTempPath(), "EdiIntegrationStudio.Tests", Guid.NewGuid().ToString("N"));

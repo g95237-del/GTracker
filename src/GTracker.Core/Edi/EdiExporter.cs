@@ -76,6 +76,15 @@ public sealed class EdiExporter
                     {
                         throw new InvalidOperationException("The selected export folder belongs to a different studio project.");
                     }
+                    var previouslyManaged = oldManifest.Files.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var collisions = newFiles.Where(relativePath => !previouslyManaged.Contains(relativePath) &&
+                        File.Exists(Path.Combine(outputDirectory, relativePath.Replace('/', Path.DirectorySeparatorChar)))).ToArray();
+                    if (collisions.Length > 0)
+                    {
+                        throw new InvalidOperationException(
+                            "The Gallery contains files this project manifest does not own and export would replace: " +
+                            string.Join(", ", collisions));
+                    }
                 }
                 else
                 {
@@ -118,7 +127,7 @@ public sealed class EdiExporter
                 CancellationToken.None);
             File.Move(temporaryManifest, manifestTarget, true);
 
-            var definitionCount = project.Actions.Count + (ShouldWriteBuiltInFiller(project) ? 1 : 0);
+            var definitionCount = project.GetLogicalActions().Count + (ShouldWriteBuiltInFiller(project) ? 1 : 0);
             return new(outputDirectory, definitionCount, scriptCount, issues);
         }
         finally
@@ -137,23 +146,25 @@ public sealed class EdiExporter
             "Name,FileName,StartTime,EndTime,Type,Loop,Description"
         };
         var scriptCount = 0;
-        var variants = new HashSet<string>(
-            project.Actions.Select(action => EdiValidator.NormalizeVariant(action.Variant)),
-            StringComparer.OrdinalIgnoreCase);
-        if (variants.Count == 0) variants.Add("default");
+        var definitions = project.GetLogicalActions();
+        var variants = project.GetVariants();
+
+        foreach (var definition in definitions)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            definitionLines.Add(string.Join(',',
+                EscapeCsv(definition.Name),
+                EscapeCsv(definition.FileName),
+                "0",
+                definition.DurationMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                definition.Type.ToString().ToLowerInvariant(),
+                definition.Loop ? "true" : "false",
+                EscapeCsv(definition.Description)));
+        }
 
         foreach (var action in project.Actions)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            definitionLines.Add(string.Join(',',
-                EscapeCsv(action.Name),
-                EscapeCsv(action.FileName),
-                "0",
-                action.DurationMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                action.Type.ToString().ToLowerInvariant(),
-                action.Loop ? "true" : "false",
-                EscapeCsv(action.Description)));
-
             var variant = EdiValidator.NormalizeVariant(action.Variant);
             var scriptDirectory = variant.Equals("default", StringComparison.OrdinalIgnoreCase)
                 ? outputDirectory
@@ -209,7 +220,7 @@ public sealed class EdiExporter
                 bundleText.Append('-').AppendLine(bundle.Name);
                 foreach (var actionName in bundle.Actions)
                 {
-                    var canonicalName = project.Actions.First(action =>
+                    var canonicalName = definitions.First(action =>
                         action.Name.Equals(actionName, StringComparison.OrdinalIgnoreCase)).Name;
                     bundleText.AppendLine(canonicalName);
                 }

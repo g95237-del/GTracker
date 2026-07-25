@@ -106,6 +106,7 @@ public sealed class ProjectStoreTests
             Assert.Single(loaded.Actions);
             Assert.Equal("GoblinHouse", loaded.Actions[0].UnitySceneName);
             Assert.Equal("MailFail", loaded.Actions[0].UnityAnimationName);
+            Assert.Equal(project.Actions[0].DefinitionId, loaded.Actions[0].DefinitionId);
             Assert.True(loaded.Actions[0].IsLocked);
             Assert.Empty(Directory.EnumerateFiles(directory, "*.tmp"));
 
@@ -152,6 +153,44 @@ public sealed class ProjectStoreTests
             Assert.True(loaded.Game.Simulator.IsVisible);
             Assert.Equal(0.5, loaded.Game.Simulator.CenterX);
             Assert.Equal(0.42, loaded.Game.Simulator.Width);
+            Assert.Equal(StudioProject.CurrentSchemaVersion, loaded.SchemaVersion);
+            Assert.Equal(["default"], loaded.Variants);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task Load_MigratesSchemaOneActionsToLogicalDefinitionsAndWorkspaces()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "EdiIntegrationStudio.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var actionId = Guid.NewGuid();
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(directory, ProjectStore.ProjectFileName), $$"""
+                {
+                  "schemaVersion": 1,
+                  "game": {},
+                  "actions": [
+                    {
+                      "id": "{{actionId}}",
+                      "name": "scene",
+                      "fileName": "scene",
+                      "variant": "detailed",
+                      "tracks": []
+                    }
+                  ]
+                }
+                """);
+
+            var loaded = await new ProjectStore().LoadAsync(directory);
+
+            Assert.Equal(StudioProject.CurrentSchemaVersion, loaded.SchemaVersion);
+            Assert.Equal(actionId, Assert.Single(loaded.Actions).DefinitionId);
+            Assert.Equal(["detailed"], loaded.Variants);
         }
         finally
         {

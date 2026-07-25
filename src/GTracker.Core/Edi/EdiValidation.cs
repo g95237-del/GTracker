@@ -26,8 +26,10 @@ public sealed class EdiValidator
     {
         ArgumentNullException.ThrowIfNull(project);
         var issues = new List<ValidationIssue>();
-        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var fileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var names = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+        var fileNames = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+        var definitions = new Dictionary<Guid, AuthoredAction>();
+        var definitionVariants = new Dictionary<Guid, HashSet<string>>();
         var scriptKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         if (string.IsNullOrWhiteSpace(project.Name))
@@ -35,20 +37,60 @@ public sealed class EdiValidator
             issues.Add(Error("Project", "Project name is required."));
         }
 
+        foreach (var variant in project.Variants)
+        {
+            if (!IsSafeVariant(variant))
+            {
+                issues.Add(Error("Workspaces", $"Variant '{variant}' must be 'default' or a single safe folder name and cannot be EDI's reserved 'None' sentinel."));
+            }
+        }
+
         foreach (var action in project.Actions)
         {
             var location = string.IsNullOrWhiteSpace(action.Name) ? $"Scene {action.Id}" : action.Name;
+            var variant = NormalizeVariant(action.Variant);
+            if (action.DefinitionId == Guid.Empty)
+            {
+                issues.Add(Error(location, "DefinitionId is required."));
+            }
+            else if (definitions.TryGetValue(action.DefinitionId, out var definition))
+            {
+                if (!HasMatchingDefinitionMetadata(definition, action))
+                {
+                    issues.Add(Error(location,
+                        "Every rendition of a definition must use the same name, filename, type, loop setting, duration, and description."));
+                }
+            }
+            else
+            {
+                definitions.Add(action.DefinitionId, action);
+            }
+
+            if (!definitionVariants.TryGetValue(action.DefinitionId, out var renditionVariants))
+            {
+                renditionVariants = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                definitionVariants.Add(action.DefinitionId, renditionVariants);
+            }
+            if (!renditionVariants.Add(variant))
+            {
+                issues.Add(Error(location, $"Definition already has a rendition in variant '{variant}'."));
+            }
+
             if (string.IsNullOrWhiteSpace(action.Name) || action.Name != action.Name.Trim())
             {
                 issues.Add(Error(location, "Name is required and cannot have leading or trailing whitespace."));
             }
-            else if (!names.Add(action.Name))
+            else if (names.TryGetValue(action.Name, out var nameOwner) && nameOwner != action.DefinitionId)
             {
-                issues.Add(Error(location, "Scene names must be unique ignoring case."));
+                issues.Add(Error(location, "Scene names must be unique across logical definitions ignoring case."));
             }
             else if (action.Name.Any(char.IsControl))
             {
                 issues.Add(Error(location, "Scene names cannot contain control characters or line breaks."));
+            }
+            else
+            {
+                names[action.Name] = action.DefinitionId;
             }
 
             if (!IsSafeEdiStem(action.FileName))
@@ -56,19 +98,18 @@ public sealed class EdiValidator
                 issues.Add(Error(location,
                     "FileName must use only letters, numbers, underscores, and hyphens; dots, tags, whitespace, and reserved names are unsafe in EDI discovery."));
             }
-            else if (!fileNames.Add(action.FileName))
+            else if (fileNames.TryGetValue(action.FileName, out var fileOwner) && fileOwner != action.DefinitionId)
             {
-                issues.Add(Error(location, "FileName must be globally unique in this project."));
+                issues.Add(Error(location, "FileName must be unique across logical definitions."));
+            }
+            else
+            {
+                fileNames[action.FileName] = action.DefinitionId;
             }
 
-            var variant = NormalizeVariant(action.Variant);
-            if (variant != "default" && !IsSafeEdiStem(variant))
+            if (!IsSafeVariant(variant))
             {
-                issues.Add(Error(location, "Variant must be 'default' or a single safe folder name."));
-            }
-            else if (variant.Equals("None", StringComparison.OrdinalIgnoreCase))
-            {
-                issues.Add(Error(location, "Variant 'None' is reserved by EDI as a device stop sentinel."));
+                issues.Add(Error(location, "Variant must be 'default' or a single safe folder name and cannot be EDI's reserved 'None' sentinel."));
             }
 
             if (action.DurationMilliseconds <= 0)
@@ -144,6 +185,17 @@ public sealed class EdiValidator
             }
         }
 
+        var projectVariants = project.GetVariants();
+        foreach (var pair in definitions)
+        {
+            var missing = projectVariants.Where(variant => !definitionVariants[pair.Key].Contains(variant)).ToArray();
+            if (missing.Length > 0)
+            {
+                issues.Add(Warning(pair.Value.Name,
+                    $"Definition has no rendition in variant(s): {string.Join(", ", missing)}."));
+            }
+        }
+
         foreach (var bundle in project.Bundles)
         {
             if (!IsSafeBundleName(bundle.Name))
@@ -153,7 +205,7 @@ public sealed class EdiValidator
 
             foreach (var actionName in bundle.Actions)
             {
-                if (!names.Contains(actionName))
+                if (!names.ContainsKey(actionName))
                 {
                     issues.Add(Error($"Bundle {bundle.Name}", $"Unknown scene '{actionName}'."));
                 }
@@ -167,8 +219,23 @@ public sealed class EdiValidator
         return issues;
     }
 
-    internal static string NormalizeVariant(string? variant) =>
+    public static string NormalizeVariant(string? variant) =>
         string.IsNullOrWhiteSpace(variant) ? "default" : variant.Trim();
+
+    public static bool IsSafeVariant(string? variant)
+    {
+        var normalized = NormalizeVariant(variant);
+        return normalized.Equals("default", StringComparison.OrdinalIgnoreCase) ||
+               IsSafeEdiStem(normalized) && !normalized.Equals("None", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasMatchingDefinitionMetadata(AuthoredAction expected, AuthoredAction actual) =>
+        expected.Name.Equals(actual.Name, StringComparison.Ordinal) &&
+        expected.FileName.Equals(actual.FileName, StringComparison.Ordinal) &&
+        expected.Type == actual.Type &&
+        expected.Loop == actual.Loop &&
+        expected.DurationMilliseconds == actual.DurationMilliseconds &&
+        expected.Description.Equals(actual.Description, StringComparison.Ordinal);
 
     private static bool IsSafeEdiStem(string? value) =>
         !string.IsNullOrWhiteSpace(value) && value == value.Trim() && SafeStemPattern.IsMatch(value) &&

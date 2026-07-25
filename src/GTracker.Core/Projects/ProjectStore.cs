@@ -59,19 +59,21 @@ public sealed class ProjectStore
         var project = await JsonSerializer.DeserializeAsync<StudioProject>(stream, JsonOptions, cancellationToken)
             ?? throw new InvalidDataException("The project file is empty.");
 
-        if (project.SchemaVersion != StudioProject.CurrentSchemaVersion)
+        if (project.SchemaVersion is < 1 or > StudioProject.CurrentSchemaVersion)
         {
             throw new InvalidDataException(
-                $"Project schema {project.SchemaVersion} is not supported by this build (expected {StudioProject.CurrentSchemaVersion}).");
+                $"Project schema {project.SchemaVersion} is not supported by this build (latest {StudioProject.CurrentSchemaVersion}).");
         }
 
         project.Game ??= new GameTarget();
         project.Game.Simulator ??= new LinearSimulatorLayout();
         project.Game.TriggerMappings ??= [];
+        project.Variants ??= [];
         project.Actions ??= [];
         project.Bundles ??= [];
         foreach (var action in project.Actions)
         {
+            if (project.SchemaVersion == 1 || action.DefinitionId == Guid.Empty) action.DefinitionId = action.Id;
             action.UnitySceneName ??= string.Empty;
             action.UnityAnimationName ??= string.Empty;
             action.Tracks ??= [];
@@ -80,6 +82,8 @@ public sealed class ProjectStore
                 track.Points ??= [];
             }
         }
+        project.Variants = project.GetVariants().ToList();
+        project.SchemaVersion = StudioProject.CurrentSchemaVersion;
 
         return project;
     }
