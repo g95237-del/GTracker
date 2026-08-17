@@ -58,7 +58,7 @@ public sealed class UnityModScaffolder
         var generatedFiles = new[]
         {
             "IntegrationMod.csproj", "Plugin.cs", "RuntimeObserver.cs", "GamePreset.cs", "EdiClient.cs",
-            "ActionNames.cs", "README.md", ManifestFileName
+            "ActionNames.cs", "CompilerAttributes.cs", "README.md", ManifestFileName
         };
         var existingFiles = generatedFiles.Where(file => File.Exists(Path.Combine(outputDirectory, file))).ToArray();
         if (existingFiles.Length > 0)
@@ -92,6 +92,8 @@ public sealed class UnityModScaffolder
             ["ActionNames.cs"] = CreateActionNames(project),
             ["README.md"] = CreateReadme(project, inspection, gameRoot, targetFramework, preset, telemetryFile, frameworks)
         };
+        if (inspection.Runtime == UnityRuntimeKind.Il2Cpp)
+            files["CompilerAttributes.cs"] = CreateCompilerAttributes();
         var manifest = new UnityScaffoldManifest
         {
             Project = project.Name,
@@ -161,9 +163,16 @@ public sealed class UnityModScaffolder
             JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }), cancellationToken);
     }
 
+    public Task RepairProjectFileAsync(
+        UnityInspectionResult inspection,
+        string projectDirectory,
+        CancellationToken cancellationToken = default) =>
+        RepairProjectFileAsync(inspection, projectDirectory, false, cancellationToken);
+
     public async Task RepairProjectFileAsync(
         UnityInspectionResult inspection,
         string projectDirectory,
+        bool allowUnverifiedReferences,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(inspection);
@@ -172,7 +181,8 @@ public sealed class UnityModScaffolder
         if (!manifest.Runtime.Equals(inspection.Runtime.ToString(), StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("The generated mod runtime no longer matches the inspected game runtime. Generate a new project.");
         if (!string.IsNullOrWhiteSpace(manifest.BepInExFlavor) &&
-            !manifest.BepInExFlavor.Equals(inspection.BepInEx.ToString(), StringComparison.OrdinalIgnoreCase))
+            !manifest.BepInExFlavor.Equals(inspection.BepInEx.ToString(), StringComparison.OrdinalIgnoreCase) &&
+            !(allowUnverifiedReferences && inspection.BepInEx == BepInExFlavor.Missing))
             throw new InvalidDataException("The BepInEx flavor changed since generation. Generate a new project so Plugin.cs uses the correct loader API.");
 
         var targetFramework = string.IsNullOrWhiteSpace(inspection.RecommendedTargetFramework)
@@ -185,8 +195,12 @@ public sealed class UnityModScaffolder
             CreateRuntimeObserver(inspection.Runtime, frameworks), cancellationToken);
         await ReplaceFileAsync(Path.Combine(projectDirectory, "EdiClient.cs"),
             CreateEdiClient(), cancellationToken);
+        if (inspection.Runtime == UnityRuntimeKind.Il2Cpp)
+            await ReplaceFileAsync(Path.Combine(projectDirectory, "CompilerAttributes.cs"),
+                CreateCompilerAttributes(), cancellationToken);
         manifest.Architecture = inspection.Architecture;
-        manifest.BepInExFlavor = inspection.BepInEx.ToString();
+        if (inspection.BepInEx != BepInExFlavor.Missing || !allowUnverifiedReferences)
+            manifest.BepInExFlavor = inspection.BepInEx.ToString();
         manifest.TargetFramework = targetFramework;
         manifest.Frameworks = frameworks.Select(framework => framework.Id).ToArray();
         manifest.GeneratedAt = DateTimeOffset.UtcNow;
@@ -282,9 +296,12 @@ public sealed class UnityModScaffolder
             AppendReference(references, "BepInEx.Unity.IL2CPP", @"$(GameRoot)\BepInEx\core\BepInEx.Unity.IL2CPP.dll");
             AppendReference(references, "Il2CppInterop.Runtime", @"$(GameRoot)\BepInEx\core\Il2CppInterop.Runtime.dll");
             AppendReference(references, "0Harmony", @"$(GameRoot)\BepInEx\core\0Harmony.dll");
+            AppendReference(references, "Il2Cppmscorlib", @"$(GameRoot)\BepInEx\interop\Il2Cppmscorlib.dll");
             AppendReference(references, "UnityEngine.CoreModule", @"$(GameRoot)\BepInEx\interop\UnityEngine.CoreModule.dll");
             AppendReference(references, "UnityEngine.AnimationModule", @"$(GameRoot)\BepInEx\interop\UnityEngine.AnimationModule.dll");
-            AppendReference(references, "UnityEngine.SceneManagementModule", @"$(GameRoot)\BepInEx\interop\UnityEngine.SceneManagementModule.dll");
+            AppendReferenceIfExists(references, "UnityEngine.SceneManagementModule",
+                @"$(GameRoot)\BepInEx\interop\UnityEngine.SceneManagementModule.dll",
+                Path.Combine(Path.GetDirectoryName(inspection.ExecutablePath)!, "BepInEx", "interop", "UnityEngine.SceneManagementModule.dll"));
             if (HasFramework(frameworks, UnityFrameworkCatalog.Timeline))
                 AppendReference(references, "UnityEngine.DirectorModule", @"$(GameRoot)\BepInEx\interop\UnityEngine.DirectorModule.dll");
             AppendReferenceIfExists(references, "PlayMaker", @"$(GameRoot)\BepInEx\interop\PlayMaker.dll",
@@ -322,6 +339,27 @@ public sealed class UnityModScaffolder
     {
         if (File.Exists(physicalPath)) AppendReference(builder, include, hintPath);
     }
+
+    private static string CreateCompilerAttributes() => """
+        namespace System.Runtime.CompilerServices;
+
+        [AttributeUsage(AttributeTargets.Class | AttributeTargets.Event | AttributeTargets.Field |
+            AttributeTargets.GenericParameter | AttributeTargets.Module | AttributeTargets.Parameter |
+            AttributeTargets.Property | AttributeTargets.ReturnValue | AttributeTargets.Struct)]
+        internal sealed class NullableAttribute : Attribute
+        {
+            public NullableAttribute(byte value) { }
+            public NullableAttribute(byte[] value) { }
+        }
+
+        [AttributeUsage(AttributeTargets.Class | AttributeTargets.Delegate | AttributeTargets.Interface |
+            AttributeTargets.Method | AttributeTargets.Module | AttributeTargets.Property |
+            AttributeTargets.Struct)]
+        internal sealed class NullableContextAttribute : Attribute
+        {
+            public NullableContextAttribute(byte value) { }
+        }
+        """;
 
     private static bool HasFramework(IEnumerable<UnityFrameworkCapability> frameworks, string id) =>
         frameworks.Any(framework => framework.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
@@ -432,6 +470,39 @@ public sealed class UnityModScaffolder
             : string.Empty;
         var timelineUsing = hasTimeline ? "using UnityEngine.Playables;\n" : string.Empty;
         var spineUsing = hasSpine ? "using Spine.Unity;\n" : string.Empty;
+        var sceneObserverFields = runtime == UnityRuntimeKind.Il2Cpp
+            ? "    private int _activeSceneHandle;\n    private string _activeSceneName = string.Empty;\n"
+            : string.Empty;
+        var sceneSubscriptions = runtime == UnityRuntimeKind.Mono
+            ? "        SceneManager.sceneLoaded += OnSceneLoaded;\n" +
+              "        SceneManager.activeSceneChanged += OnActiveSceneChanged;\n" +
+              "        Application.onBeforeRender += Tick;\n"
+            : string.Empty;
+        var sceneUnsubscriptions = runtime == UnityRuntimeKind.Mono
+            ? "        SceneManager.sceneLoaded -= OnSceneLoaded;\n" +
+              "        SceneManager.activeSceneChanged -= OnActiveSceneChanged;\n" +
+              "        Application.onBeforeRender -= Tick;\n"
+            : string.Empty;
+        var sceneStartup = runtime == UnityRuntimeKind.Il2Cpp
+            ? "        _activeSceneHandle = scene.handle;\n        _activeSceneName = scene.name;\n"
+            : string.Empty;
+        var scenePollStatement = runtime == UnityRuntimeKind.Il2Cpp
+            ? "        RunObserverStep(\"scene-poll\", PollActiveScene);\n"
+            : string.Empty;
+        var scenePollMethod = runtime == UnityRuntimeKind.Il2Cpp
+            ? """
+                  private void PollActiveScene()
+                  {
+                      var current = SceneManager.GetActiveScene();
+                      if (current.handle == _activeSceneHandle) return;
+                      var previousName = _activeSceneName;
+                      _activeSceneHandle = current.handle;
+                      _activeSceneName = current.name;
+                      HandleActiveSceneChanged(previousName, current);
+                  }
+
+              """
+            : string.Empty;
         var timedRuntimeFields = hasTimedRuntimeProbe
             ? "    private readonly Dictionary<string, RuntimePlaybackSnapshot> _runtimePlaybackStates = new();\n"
             : string.Empty;
@@ -541,7 +612,7 @@ public sealed class UnityModScaffolder
             private readonly Dictionary<string, StateSnapshot> _states = new();
             private readonly Dictionary<string, MappedPlayback> _activeAnimatorActions = new();
             private readonly Dictionary<string, float> _observerErrorNextAt = new();
-            private StreamWriter? _telemetry;
+        {{sceneObserverFields}}    private StreamWriter? _telemetry;
             private int _lastTickFrame = -1;
             private float _nextAnimatorPollAt;
             private float _nextHotkeyConfigCheckAt;
@@ -593,11 +664,8 @@ public sealed class UnityModScaffolder
                     _log?.Invoke($"Could not open discovery telemetry: {exception.Message}");
                 }
 
-                SceneManager.sceneLoaded += OnSceneLoaded;
-                SceneManager.activeSceneChanged += OnActiveSceneChanged;
-                Application.onBeforeRender += Tick;
-        {{playMakerAwakeStatement}}        var scene = SceneManager.GetActiveScene();
-                _hasFocus = Application.isFocused;
+        {{sceneSubscriptions}}{{playMakerAwakeStatement}}        var scene = SceneManager.GetActiveScene();
+        {{sceneStartup}}        _hasFocus = Application.isFocused;
                 SyncHotkeyState();
                 _edi?.ActivateFiller();
         {{capabilityStatements.ToString().TrimEnd()}}
@@ -608,10 +676,7 @@ public sealed class UnityModScaffolder
 
             private void OnDestroy()
             {
-                SceneManager.sceneLoaded -= OnSceneLoaded;
-                SceneManager.activeSceneChanged -= OnActiveSceneChanged;
-                Application.onBeforeRender -= Tick;
-        {{playMakerDestroyStatement}}        StopAllMappedPlayback("observer-stopped");
+        {{sceneUnsubscriptions}}{{playMakerDestroyStatement}}        StopAllMappedPlayback("observer-stopped");
                 Emit("SESSION", SceneManager.GetActiveScene().name, string.Empty, "observer-stopped", string.Empty);
                 FlushTelemetry();
                 _telemetry?.Dispose();
@@ -626,7 +691,7 @@ public sealed class UnityModScaffolder
                 if (frame == _lastTickFrame) return;
                 _lastTickFrame = frame;
                 var now = Time.unscaledTime;
-                if (now >= _nextHotkeyConfigCheckAt)
+        {{scenePollStatement}}        if (now >= _nextHotkeyConfigCheckAt)
                 {
                     _nextHotkeyConfigCheckAt = now + 1f;
                     if (ReloadHotkeyConfigIfChanged()) SyncHotkeyState();
@@ -974,9 +1039,14 @@ public sealed class UnityModScaffolder
 
             private void OnActiveSceneChanged(Scene previous, Scene current)
             {
+                HandleActiveSceneChanged(previous.name, current);
+            }
+
+        {{scenePollMethod}}    private void HandleActiveSceneChanged(string previousName, Scene current)
+            {
                 StopAllMappedPlayback("active-scene-changed");
                 ResetRuntimeDiscovery();
-                Emit("ACTIVE_SCENE", current.name, string.Empty, current.name, $"from={previous.name}");
+                Emit("ACTIVE_SCENE", current.name, string.Empty, current.name, $"from={previousName}");
                 ObserveScene(current.name, "active", triggerMapping: true);
             }
 

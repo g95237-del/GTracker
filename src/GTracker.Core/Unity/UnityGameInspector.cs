@@ -66,10 +66,16 @@ public sealed class UnityGameInspector
         var sceneModule = File.Exists(Path.Combine(managedDirectory, "UnityEngine.SceneManagementModule.dll"));
         var bepinEx = DetectBepInEx(directory);
         var interopDirectory = Path.Combine(directory, "BepInEx", "interop");
+        var interopCoreModule = Path.Combine(interopDirectory, "UnityEngine.CoreModule.dll");
+        var interopAnimationModule = Path.Combine(interopDirectory, "UnityEngine.AnimationModule.dll");
+        var interopSceneModule = Path.Combine(interopDirectory, "UnityEngine.SceneManagementModule.dll");
+        var interopMscorlib = Path.Combine(interopDirectory, "Il2Cppmscorlib.dll");
+        var sceneApiInCore = !File.Exists(interopSceneModule) &&
+                             DefinesType(interopCoreModule, "UnityEngine.SceneManagement", "SceneManager") &&
+                             DefinesType(interopCoreModule, "UnityEngine.SceneManagement", "Scene");
         var interopReady = runtime != UnityRuntimeKind.Il2Cpp ||
-                           File.Exists(Path.Combine(interopDirectory, "UnityEngine.CoreModule.dll")) &&
-                           File.Exists(Path.Combine(interopDirectory, "UnityEngine.AnimationModule.dll")) &&
-                           File.Exists(Path.Combine(interopDirectory, "UnityEngine.SceneManagementModule.dll"));
+                           File.Exists(interopMscorlib) && File.Exists(interopCoreModule) && File.Exists(interopAnimationModule) &&
+                           (File.Exists(interopSceneModule) || sceneApiInCore);
         var engineReady = runtime switch
         {
             UnityRuntimeKind.Mono => (unityEngineFacade || modularUnity) &&
@@ -95,6 +101,8 @@ public sealed class UnityGameInspector
             : $"Detected BepInEx flavor: {bepinEx}.");
         if (runtime == UnityRuntimeKind.Il2Cpp && !interopReady)
             findings.Add("IL2CPP interop assemblies are missing. Run the game once with BepInEx before building the plugin.");
+        if (runtime == UnityRuntimeKind.Il2Cpp && sceneApiInCore)
+            findings.Add("Unity scene APIs are provided by the IL2CPP UnityEngine.CoreModule assembly; a separate SceneManagementModule is not required.");
         if (runtime != UnityRuntimeKind.Unknown && !engineReady)
             findings.Add("Required Unity scene/animation reference assemblies were not found.");
         if (runtime == UnityRuntimeKind.Mono && unityEngineFacade && modularUnity)
@@ -169,6 +177,29 @@ public sealed class UnityGameInspector
         catch (Exception exception) when (exception is BadImageFormatException or IOException or UnauthorizedAccessException)
         {
             return null;
+        }
+    }
+
+    private static bool DefinesType(string path, string @namespace, string name)
+    {
+        if (!File.Exists(path)) return false;
+        try
+        {
+            using var stream = File.OpenRead(path);
+            using var reader = new PEReader(stream);
+            if (!reader.HasMetadata) return false;
+            var metadata = reader.GetMetadataReader();
+            foreach (var handle in metadata.TypeDefinitions)
+            {
+                var type = metadata.GetTypeDefinition(handle);
+                if (metadata.GetString(type.Namespace).Equals(@namespace, StringComparison.Ordinal) &&
+                    metadata.GetString(type.Name).Equals(name, StringComparison.Ordinal)) return true;
+            }
+            return false;
+        }
+        catch (Exception exception) when (exception is BadImageFormatException or IOException or UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 

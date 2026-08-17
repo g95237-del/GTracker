@@ -2521,14 +2521,22 @@ public partial class MainWindow : Window
             var manifest = await UnityModDeployer.LoadManifestAsync(projectPath);
             var inspection = _gameInspector.Inspect(manifest.GameExecutable);
             ApplyUnityInspection(inspection);
+            var allowUnverifiedReferences = false;
             if (!inspection.IsBuildReady)
             {
-                MessageBox.Show(this, string.Join(Environment.NewLine, inspection.Findings), "Mod toolchain is not ready",
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
-                SetStatus("Install the matching BepInEx build and run the game once before building.", true);
-                return;
+                var choice = MessageBox.Show(this,
+                    string.Join(Environment.NewLine, inspection.Findings) + Environment.NewLine + Environment.NewLine +
+                    "The referenced BepInEx and Unity assemblies are required for compilation. Attempt the build anyway? " +
+                    "This skips GTracker's readiness preflight; MSBuild will still fail with the exact missing reference or compiler error if the detected layout is unusable.",
+                    "Mod toolchain is not verified", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (choice != MessageBoxResult.Yes)
+                {
+                    SetStatus("Install the matching BepInEx build and run the game once before building.", true);
+                    return;
+                }
+                allowUnverifiedReferences = true;
             }
-            await _modScaffolder.RepairProjectFileAsync(inspection, projectPath);
+            await _modScaffolder.RepairProjectFileAsync(inspection, projectPath, allowUnverifiedReferences);
             manifest = await UnityModDeployer.LoadManifestAsync(projectPath);
 
             var preset = ModPresetCombo.SelectedItem is UnityModPresetKind selectedPreset

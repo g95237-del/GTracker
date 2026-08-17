@@ -134,6 +134,83 @@ public sealed class UnityToolingTests
     }
 
     [Fact]
+    public async Task Inspect_AcceptsUnity6SceneApisInCoreInterop()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            var executable = Path.Combine(directory, "Unity6Game.exe");
+            File.Copy(Environment.ProcessPath!, executable);
+            File.WriteAllBytes(Path.Combine(directory, "GameAssembly.dll"), []);
+            var metadata = Path.Combine(directory, "Unity6Game_Data", "il2cpp_data", "Metadata");
+            Directory.CreateDirectory(metadata);
+            File.WriteAllBytes(Path.Combine(metadata, "global-metadata.dat"), []);
+            var core = Path.Combine(directory, "BepInEx", "core");
+            Directory.CreateDirectory(core);
+            File.WriteAllBytes(Path.Combine(core, "BepInEx.Unity.IL2CPP.dll"), []);
+            var interop = Path.Combine(directory, "BepInEx", "interop");
+            Directory.CreateDirectory(interop);
+            File.Copy(typeof(UnityEngine.SceneManagement.SceneManager).Assembly.Location,
+                Path.Combine(interop, "UnityEngine.CoreModule.dll"));
+            File.WriteAllBytes(Path.Combine(interop, "UnityEngine.AnimationModule.dll"), []);
+            File.WriteAllBytes(Path.Combine(interop, "Il2Cppmscorlib.dll"), []);
+
+            var result = new UnityGameInspector().Inspect(executable);
+
+            Assert.True(result.InteropReady);
+            Assert.True(result.IsBuildReady);
+            Assert.Contains(result.Findings, finding => finding.Contains("CoreModule assembly"));
+            var output = Path.Combine(directory, "mod");
+            await new UnityModScaffolder().GenerateAsync(new StudioProject(), result, output);
+            var project = await File.ReadAllTextAsync(Path.Combine(output, "IntegrationMod.csproj"));
+            Assert.Contains("UnityEngine.CoreModule", project);
+            Assert.Contains("Il2Cppmscorlib", project);
+            Assert.DoesNotContain("UnityEngine.SceneManagementModule", project);
+            Assert.True(File.Exists(Path.Combine(output, "CompilerAttributes.cs")));
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task Scaffold_ForcedRepairPreservesKnownBepInExFlavor()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            var executable = Path.Combine(directory, "Game.exe");
+            File.WriteAllBytes(executable, []);
+            var interop = Path.Combine(directory, "BepInEx", "interop");
+            Directory.CreateDirectory(interop);
+            File.WriteAllBytes(Path.Combine(interop, "UnityEngine.SceneManagementModule.dll"), []);
+            var ready = new UnityInspectionResult(executable, UnityRuntimeKind.Il2Cpp, "Amd64",
+                Path.Combine(directory, "Game_Data"), [])
+            {
+                RecommendedTargetFramework = "net6.0",
+                BepInEx = BepInExFlavor.Il2Cpp6
+            };
+            var output = Path.Combine(directory, "mod");
+            var scaffolder = new UnityModScaffolder();
+            await scaffolder.GenerateAsync(new StudioProject(), ready, output);
+            Assert.Contains("UnityEngine.SceneManagementModule",
+                await File.ReadAllTextAsync(Path.Combine(output, "IntegrationMod.csproj")));
+            var unverified = ready with { BepInEx = BepInExFlavor.Missing };
+
+            await Assert.ThrowsAsync<InvalidDataException>(() => scaffolder.RepairProjectFileAsync(unverified, output));
+            await scaffolder.RepairProjectFileAsync(unverified, output, allowUnverifiedReferences: true);
+
+            var manifest = await UnityModDeployer.LoadManifestAsync(output);
+            Assert.Equal(BepInExFlavor.Il2Cpp6.ToString(), manifest.BepInExFlavor);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public void Inspect_ReportsSupportedAndDetectedFrameworks()
     {
         var directory = CreateTemporaryDirectory();
@@ -228,13 +305,19 @@ public sealed class UnityToolingTests
             Assert.Contains("<ExternallyResolved>true</ExternallyResolved>", projectFile);
             Assert.Contains("<Private>false</Private>", projectFile);
             Assert.DoesNotContain("Assembly-CSharp", projectFile);
-            Assert.DoesNotContain("mscorlib", projectFile, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("<Reference Include=\"Il2Cppmscorlib\"", projectFile);
             Assert.DoesNotContain("netstandard.dll", projectFile, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("UnityEngine.InputLegacyModule", projectFile);
             Assert.DoesNotContain("PlayMaker", projectFile);
             Assert.Contains("BasePlugin", plugin);
             Assert.Contains("Optional runtime patches failed", plugin);
             Assert.Contains("RuntimeObserver.ConfigureHotkeys(Config)", plugin);
+            Assert.Contains("PollActiveScene", observer);
+            Assert.DoesNotContain("SceneManager.sceneLoaded +=", observer);
+            Assert.DoesNotContain("Application.onBeforeRender", observer);
+            var compilerAttributes = await File.ReadAllTextAsync(Path.Combine(output, "CompilerAttributes.cs"));
+            Assert.Contains("internal sealed class NullableAttribute", compilerAttributes);
+            Assert.Contains("public NullableAttribute(byte[] value)", compilerAttributes);
             Assert.Contains("GetAsyncKeyState", observer);
             Assert.Contains("ConfigFile", observer);
             Assert.Contains("Bind(\"Hotkeys\", \"Pause\", \"1 | NumPad1\"", observer);
@@ -1009,6 +1092,7 @@ public sealed class UnityToolingTests
             public enum LoadSceneMode { Single, Additive }
             public struct Scene
             {
+                public int handle { get; set; }
                 public string name { get; set; }
                 public bool IsValid() => true;
             }
