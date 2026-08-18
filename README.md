@@ -1,6 +1,6 @@
 # EDI Integration Studio
 
-EDI Integration Studio is a Windows authoring tool for building game integrations for [Easy Device Integration (EDI)](https://github.com/NoGRo/Edi). It keeps a rolling capture of a visible game window, lets an author isolate and script scenes immediately, exports a validated EDI Gallery, and can generate and install Unity/BepInEx integration plugins without requiring game-specific code for convention-based or explicitly mapped animations.
+EDI Integration Studio is a Windows authoring tool for building game integrations for [Easy Device Integration (EDI)](https://github.com/NoGRo/Edi). It keeps a rolling capture of a visible game window, lets an author isolate and script scenes immediately, exports a validated EDI Gallery, and provides engine-specific discovery workflows for Unity and Godot.
 
 The repository is named `GTracker`; the application is branded **EDI Integration Studio**. The project is under active development and currently targets Windows x64.
 
@@ -22,6 +22,7 @@ _Authoring workspace shown with a synthetic demo project and capture._
 - Detects Unity Mono or IL2CPP, target framework, BepInEx flavor, optional animation frameworks, and build readiness.
 - Provisions packaged BepInEx 6 x64 builds, generates a mod scaffold, builds it, and installs the owned plugin.
 - Observes Unity scenes, Animator, Legacy Animation, Timeline, PlayMaker, and Mono Spine where runtime support is available.
+- Analyzes Godot 3/4 PCK layouts and can transactionally install a reversible Godot 3 scene/AnimationPlayer discovery autoload without modifying the executable or PCK.
 - Correlates capture intervals with telemetry and creates explicit candidate/path/duration mappings.
 
 ## Requirements
@@ -101,6 +102,15 @@ filler,filler,0,1200,filler,true,
 ```
 
 The manifest manages files at the entire `Gallery` root. Re-exporting the same project removes previously managed files that became stale. Do not have different Studio projects manage the same `Gallery` root.
+
+## Godot Discovery Details
+
+1. Select **Godot** from the global engine selector, choose the exported Windows executable, and click **Analyze Godot export**.
+2. For a supported unencrypted Godot 3 export, close the game and click **Install discovery**. GTracker creates `GTrackerRuntime\Godot`, backs up an existing `override.cfg`, and adds one owned autoload entry. It does not modify the executable or PCK.
+3. Click **Launch + verify**. The game is left running after startup telemetry appears, and GTracker begins watching scene and `AnimationPlayer` events.
+4. Use **Watch discovery** to reopen the existing telemetry stream. **Remove** restores the original `override.cfg` and preserves telemetry for mapping and troubleshooting.
+
+Godot 4 exports can currently be analyzed, but discovery installation remains disabled until a representative Godot 4 candidate is validated. Godot discovery currently observes runtime state only; EDI playback and explicit Godot mappings are the next implementation layer.
 
 ## Unity Setup Details
 

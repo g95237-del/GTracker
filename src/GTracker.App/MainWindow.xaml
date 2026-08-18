@@ -268,9 +268,19 @@
                                         <WrapPanel>
                                             <Button x:Name="AnalyzeGodotButton" Content="Analyze Godot export" Click="AnalyzeGodotGame_Click"
                                                     Style="{StaticResource PrimaryButtonStyle}"/>
+                                            <Button x:Name="InstallGodotDiscoveryButton" Content="Install discovery" Click="InstallGodotDiscovery_Click" IsEnabled="False"/>
+                                            <Button x:Name="RemoveGodotDiscoveryButton" Content="Remove" Click="RemoveGodotDiscovery_Click" IsEnabled="False"/>
+                                            <Button x:Name="LaunchVerifyGodotButton" Content="Launch + verify" Click="LaunchVerifyGodot_Click" IsEnabled="False"/>
+                                            <Button x:Name="WatchGodotTelemetryButton" Content="Watch discovery" Click="WatchGodotTelemetry_Click" IsEnabled="False"/>
                                         </WrapPanel>
                                         <TextBlock x:Name="GodotStatusText" Text="Not analyzed" Margin="3,2" TextWrapping="Wrap"
                                                    Foreground="{DynamicResource WarningTextBrush}"/>
+                                        <ListBox x:Name="GodotTelemetryList" Height="180" MinHeight="120" MaxHeight="420" Margin="3"
+                                                 DisplayMemberPath="DisplayText" FontFamily="Consolas" FontSize="11"
+                                                 ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                                 ToolTip="Live Godot scene and AnimationPlayer events emitted by the installed discovery autoload"/>
+                                        <TextBlock x:Name="GodotTelemetryStatusText" Text="Stopped | 0 shown" Margin="3,1"
+                                                   Foreground="{DynamicResource MutedTextBrush}" FontSize="11"/>
                                     </StackPanel>
                                     <Border x:Name="ProviderFoundationNotice" Background="{DynamicResource InputBrush}" BorderBrush="{DynamicResource EdgeBrush}"
                                             BorderThickness="1" CornerRadius="3" Padding="9" Margin="0,12,0,0">

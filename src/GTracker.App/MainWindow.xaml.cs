@@ -43,20 +43,25 @@ public partial class MainWindow : Window
     private readonly EdiExporter _exporter = new();
     private readonly EdiApiClient _ediApi = new();
     private readonly GodotGameInspector _godotGameInspector = new();
+    private readonly GodotDiscoveryProvisioner _godotDiscoveryProvisioner = new();
     private readonly UnityGameInspector _gameInspector = new();
     private readonly UnityModScaffolder _modScaffolder = new();
     private readonly UnityModDeployer _modDeployer = new();
     private readonly UnityRuntimeProvisioner _runtimeProvisioner = new();
     private readonly ObservableCollection<UnityTelemetryEntry> _telemetryEntries = [];
+    private readonly ObservableCollection<GodotTelemetryEntry> _godotTelemetryEntries = [];
     private readonly ObservableCollection<RecentProjectItem> _recentProjectItems = [];
     private readonly DispatcherTimer _clipTimer;
     private readonly DispatcherTimer _telemetryTimer;
+    private readonly DispatcherTimer _godotTelemetryTimer;
     private readonly Stopwatch _clipPlaybackClock = new();
     private readonly Stopwatch _captureRateClock = Stopwatch.StartNew();
     private readonly SemaphoreSlim _projectOperationGate = new(1, 1);
     private readonly SemaphoreSlim _projectSwitchGate = new(1, 1);
     private readonly SemaphoreSlim _captureLifecycleGate = new(1, 1);
     private readonly SemaphoreSlim _unityOperationGate = new(1, 1);
+    private readonly SemaphoreSlim _godotOperationGate = new(1, 1);
+    private readonly GodotTelemetryCursor _godotTelemetryCursor = new();
     private readonly Dictionary<EdiAxis, List<FunscriptPoint>> _workingTracks = [];
     private readonly HashSet<string> _suppressedTelemetryKinds = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _suppressedTelemetryCandidates = new(StringComparer.OrdinalIgnoreCase);
@@ -66,6 +71,7 @@ public partial class MainWindow : Window
     private CaptureSession? _captureSession;
     private CapturedClip? _workingClip;
     private UnityInspectionResult? _inspection;
+    private GodotInspectionResult? _godotInspection;
     private CancellationTokenSource? _actionLoadCancellation;
     private CancellationTokenSource? _captureActionCancellation;
     private CancellationTokenSource? _unitySetupCancellation;
@@ -94,7 +100,7 @@ public partial class MainWindow : Window
     private bool _telemetryFollowTail = true;
     private bool _updatingRecentProjects;
     private bool _updatingEngineSelection;
-    private bool _updatingGodotUi;
+    private bool _updatingGodotUi = true;
     private int _projectGeneration;
     private int _telemetryLineCount;
     private string _watchedTelemetryPath = string.Empty;
@@ -104,6 +110,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        _updatingGodotUi = false;
         _updatingEngineSelection = true;
         EngineCombo.ItemsSource = EngineUiCatalog.Profiles;
         EngineCombo.SelectedItem = EngineUiCatalog.Get(IntegrationEngine.Unity);
@@ -115,6 +122,7 @@ public partial class MainWindow : Window
         ModPresetCombo.ItemsSource = Enum.GetValues<UnityModPresetKind>();
         CaptureFpsCombo.ItemsSource = new[] { 20, 30 };
         UnityTelemetryList.ItemsSource = _telemetryEntries;
+        GodotTelemetryList.ItemsSource = _godotTelemetryEntries;
         RecentProjectsCombo.ItemsSource = _recentProjectItems;
         ActionTypeCombo.SelectedItem = EdiGalleryType.Gallery;
         AxisCombo.SelectedItem = EdiAxis.Default;
@@ -127,6 +135,8 @@ public partial class MainWindow : Window
             (_, _) => AdvanceClipPlayback(), Dispatcher);
         _telemetryTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background,
             (_, _) => RefreshUnityTelemetry(), Dispatcher);
+        _godotTelemetryTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background,
+            (_, _) => RefreshGodotTelemetry(), Dispatcher);
         UpdatePresetDescription();
         UpdateTriggerMappingStatus();
     }
@@ -343,7 +353,9 @@ public partial class MainWindow : Window
         if (_projectDirectory is null) return false;
         SyncSimulatorLayout();
         _project.Name = string.IsNullOrWhiteSpace(ProjectNameText.Text) ? _project.Name : ProjectNameText.Text.Trim();
-        _project.Game.ExecutablePath = GameExecutableText.Text.Trim();
+        _project.Game.ExecutablePath = EngineCombo.SelectedItem is EngineUiProfile { Engine: IntegrationEngine.Godot }
+            ? GodotExecutableText.Text.Trim()
+            : GameExecutableText.Text.Trim();
         if (ModPresetCombo.SelectedItem is UnityModPresetKind preset) _project.Game.ModPreset = preset;
         await _projectStore.SaveAsync(_projectDirectory, _project);
         ProjectPathText.Text = _projectDirectory;
@@ -364,6 +376,7 @@ public partial class MainWindow : Window
             await StopCaptureAsync();
             _clipTimer.Stop();
             StopTelemetryWatch(clearOutput: true);
+            StopGodotTelemetryWatch(clearOutput: true);
             _clipPlaybackClock.Reset();
             _workingClip = null;
             _workingClipStartedAtUtc = null;
@@ -373,6 +386,7 @@ public partial class MainWindow : Window
             _correlatedAnimationCandidates = [];
             _pendingCapturedTriggerMapping = null;
             _inspection = null;
+            _godotInspection = null;
             _editingActionId = null;
             _reviewMode = false;
             _latestPreviewFrame = null;
@@ -398,6 +412,9 @@ public partial class MainWindow : Window
         ProjectNameText.Text = _project.Name;
         ProjectPathText.Text = _projectDirectory ?? "No project folder selected";
         GameExecutableText.Text = _project.Game.ExecutablePath;
+        _updatingGodotUi = true;
+        GodotExecutableText.Text = _project.Game.ExecutablePath;
+        _updatingGodotUi = false;
         UnityStatusText.Text = _project.Game.Runtime == UnityRuntimeKind.Unknown
             ? "Not analyzed"
             : $"Unity {_project.Game.Runtime} / {_project.Game.Architecture} / {_project.Game.TargetFramework}";
@@ -410,6 +427,7 @@ public partial class MainWindow : Window
         RefreshVariantWorkspaces();
         RefreshActionList();
         _updatingUi = false;
+        UpdateGodotInstallState();
         ResetActionEditor();
     }
 
@@ -2247,12 +2265,15 @@ public partial class MainWindow : Window
     private void GodotExecutableText_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (_updatingGodotUi) return;
+        _godotInspection = null;
         GodotStatusText.Text = "Not analyzed";
         GodotStatusText.SetResourceReference(TextBlock.ForegroundProperty, "WarningTextBrush");
+        UpdateGodotInstallState();
     }
 
     private async void AnalyzeGodotGame_Click(object sender, RoutedEventArgs e)
     {
+        if (!await _godotOperationGate.WaitAsync(0)) return;
         SetGodotAnalysisBusy(true);
         GodotStatusText.Text = "Analyzing PCK structure...";
         try
@@ -2278,7 +2299,119 @@ public partial class MainWindow : Window
         finally
         {
             SetGodotAnalysisBusy(false);
+            _godotOperationGate.Release();
         }
+    }
+
+    private async void InstallGodotDiscovery_Click(object sender, RoutedEventArgs e)
+    {
+        if (_godotInspection is not { IsSupported: true, EngineMajorVersion: 3 } inspection) return;
+        var gameRoot = Path.GetDirectoryName(inspection.ExecutablePath)!;
+        if (MessageBox.Show(this,
+                $"Install a GTracker discovery autoload into:{Environment.NewLine}{gameRoot}{Environment.NewLine}{Environment.NewLine}" +
+                "This creates GTrackerRuntime\\Godot files and merges one owned entry into override.cfg. " +
+                "An existing override.cfg is backed up for exact removal. The PCK and executable are not modified.",
+                "Install Godot discovery", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (!await _godotOperationGate.WaitAsync(0)) return;
+        var projectGeneration = Volatile.Read(ref _projectGeneration);
+        SetGodotToolsBusy(true);
+        try
+        {
+            var result = await Task.Run(() => _godotDiscoveryProvisioner.Install(inspection.ExecutablePath));
+            if (projectGeneration != Volatile.Read(ref _projectGeneration)) return;
+            _project.Game.ExecutablePath = inspection.ExecutablePath;
+            _project.Game.TelemetryPath = result.TelemetryPath;
+            _project.Game.InstalledPluginPath = result.ManifestPath;
+            if (_projectDirectory is not null) await SaveProjectAsync();
+            SetStatus("Godot discovery autoload installed. Use Launch + verify to confirm runtime telemetry.");
+            UpdateGodotInstallState();
+        }
+        catch (Exception exception)
+        {
+            SetStatus($"Godot discovery installation failed: {exception.Message}", true);
+        }
+        finally
+        {
+            SetGodotToolsBusy(false);
+            _godotOperationGate.Release();
+        }
+    }
+
+    private async void RemoveGodotDiscovery_Click(object sender, RoutedEventArgs e)
+    {
+        var executable = GodotExecutableText.Text.Trim();
+        if (MessageBox.Show(this,
+                "Remove the GTracker Godot autoload and restore the original override.cfg? Discovery telemetry will be preserved.",
+                "Remove Godot discovery", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (!await _godotOperationGate.WaitAsync(0)) return;
+        var projectGeneration = Volatile.Read(ref _projectGeneration);
+        SetGodotToolsBusy(true);
+        try
+        {
+            await Task.Run(() => _godotDiscoveryProvisioner.Uninstall(executable));
+            if (projectGeneration != Volatile.Read(ref _projectGeneration)) return;
+            StopGodotTelemetryWatch();
+            _project.Game.InstalledPluginPath = string.Empty;
+            if (_projectDirectory is not null) await SaveProjectAsync();
+            SetStatus("Godot discovery autoload removed; telemetry was preserved.");
+            UpdateGodotInstallState();
+        }
+        catch (Exception exception)
+        {
+            SetStatus($"Godot discovery removal failed: {exception.Message}", true);
+        }
+        finally
+        {
+            SetGodotToolsBusy(false);
+            _godotOperationGate.Release();
+        }
+    }
+
+    private async void LaunchVerifyGodot_Click(object sender, RoutedEventArgs e)
+    {
+        var executable = Path.GetFullPath(GodotExecutableText.Text.Trim());
+        var gameRoot = Path.GetDirectoryName(executable)!;
+        var telemetry = GetGodotTelemetryPath(executable);
+        var originalLength = File.Exists(telemetry) ? new FileInfo(telemetry).Length : 0;
+        if (!await _godotOperationGate.WaitAsync(0)) return;
+        var projectGeneration = Volatile.Read(ref _projectGeneration);
+        SetGodotToolsBusy(true);
+        try
+        {
+            var process = Process.Start(new ProcessStartInfo(executable) { WorkingDirectory = gameRoot, UseShellExecute = true }) ??
+                          throw new InvalidOperationException("The Godot game process could not be started.");
+            process.Dispose();
+            var verified = false;
+            for (var attempt = 0; attempt < 40; attempt++)
+            {
+                await Task.Delay(500);
+                if (File.Exists(telemetry) && new FileInfo(telemetry).Length > originalLength)
+                {
+                    verified = true;
+                    break;
+                }
+            }
+            if (!verified) throw new TimeoutException("No new discovery telemetry appeared within 20 seconds.");
+            if (projectGeneration != Volatile.Read(ref _projectGeneration)) return;
+            _project.Game.TelemetryPath = telemetry;
+            StartGodotTelemetryWatch(telemetry);
+            SetStatus("Godot discovery verified. The game was left running and live telemetry is being watched.");
+        }
+        catch (Exception exception)
+        {
+            SetStatus($"Godot launch verification failed: {exception.Message}", true);
+        }
+        finally
+        {
+            SetGodotToolsBusy(false);
+            _godotOperationGate.Release();
+        }
+    }
+
+    private void WatchGodotTelemetry_Click(object sender, RoutedEventArgs e)
+    {
+        if (_godotTelemetryTimer.IsEnabled) StopGodotTelemetryWatch();
+        else StartGodotTelemetryWatch(GetGodotTelemetryPath(GodotExecutableText.Text.Trim()));
     }
 
     private void ModPresetCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -2984,6 +3117,7 @@ public partial class MainWindow : Window
 
     private void ApplyGodotInspection(GodotInspectionResult inspection)
     {
+        _godotInspection = inspection;
         _updatingGodotUi = true;
         try
         {
@@ -3007,15 +3141,96 @@ public partial class MainWindow : Window
             : $"Godot export not confirmed / {inspection.Architecture} / {location}";
         GodotStatusText.SetResourceReference(TextBlock.ForegroundProperty,
             inspection.IsSupported ? "AccentBrush" : "WarningTextBrush");
+        UpdateGodotInstallState();
     }
 
-    private void SetGodotAnalysisBusy(bool busy)
+    private void SetGodotAnalysisBusy(bool busy) => SetGodotToolsBusy(busy);
+
+    private void SetGodotToolsBusy(bool busy)
     {
+        NewProjectButton.IsEnabled = !busy;
+        OpenProjectButton.IsEnabled = !busy;
+        RecentProjectsCombo.IsEnabled = !busy && _recentProjectItems.Count > 1;
         GodotBrowseButton.IsEnabled = !busy;
         GodotExecutableText.IsEnabled = !busy;
         AnalyzeGodotButton.IsEnabled = !busy;
         EngineCombo.IsEnabled = !busy;
+        if (!busy) UpdateGodotInstallState();
+        else
+        {
+            InstallGodotDiscoveryButton.IsEnabled = false;
+            RemoveGodotDiscoveryButton.IsEnabled = false;
+            LaunchVerifyGodotButton.IsEnabled = false;
+            WatchGodotTelemetryButton.IsEnabled = false;
+        }
     }
+
+    private void UpdateGodotInstallState()
+    {
+        var executable = GodotExecutableText.Text.Trim();
+        var installed = false;
+        if (!string.IsNullOrWhiteSpace(executable))
+        {
+            try { installed = File.Exists(GetGodotManifestPath(executable)); }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException) { }
+        }
+        InstallGodotDiscoveryButton.IsEnabled = _godotInspection is { IsSupported: true, EngineMajorVersion: 3 } && !installed;
+        RemoveGodotDiscoveryButton.IsEnabled = installed;
+        LaunchVerifyGodotButton.IsEnabled = installed;
+        WatchGodotTelemetryButton.IsEnabled = installed && File.Exists(GetGodotTelemetryPath(executable));
+        WatchGodotTelemetryButton.Content = _godotTelemetryTimer?.IsEnabled == true ? "Stop watching" : "Watch discovery";
+    }
+
+    private void StartGodotTelemetryWatch(string path)
+    {
+        if (!File.Exists(path)) throw new FileNotFoundException("Godot discovery telemetry has not been created.", path);
+        _project.Game.TelemetryPath = path;
+        _godotTelemetryCursor.Reset();
+        _godotTelemetryEntries.Clear();
+        RefreshGodotTelemetry();
+        _godotTelemetryTimer.Start();
+        UpdateGodotInstallState();
+    }
+
+    private void StopGodotTelemetryWatch(bool clearOutput = false)
+    {
+        _godotTelemetryTimer.Stop();
+        if (clearOutput)
+        {
+            _godotTelemetryCursor.Reset();
+            _godotTelemetryEntries.Clear();
+        }
+        GodotTelemetryStatusText.Text = $"Stopped | {_godotTelemetryEntries.Count} shown";
+        UpdateGodotInstallState();
+    }
+
+    private void RefreshGodotTelemetry()
+    {
+        var path = _project.Game.TelemetryPath;
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+        GodotTelemetryReadResult result;
+        try { result = _godotTelemetryCursor.ReadNew(path); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            GodotTelemetryStatusText.Text = $"Read failed: {exception.Message}";
+            return;
+        }
+        if (result.WasReset) _godotTelemetryEntries.Clear();
+        foreach (var entry in result.Entries)
+        {
+            _godotTelemetryEntries.Add(entry);
+            while (_godotTelemetryEntries.Count > MaximumFollowedTelemetryEntries) _godotTelemetryEntries.RemoveAt(0);
+        }
+        GodotTelemetryStatusText.Text = $"{(_godotTelemetryTimer.IsEnabled ? "Watching" : "Loaded")} | {_godotTelemetryEntries.Count} shown";
+        if (_godotTelemetryEntries.Count > 0) GodotTelemetryList.ScrollIntoView(_godotTelemetryEntries[^1]);
+    }
+
+    private static string GetGodotComponentRoot(string executable) =>
+        Path.Combine(Path.GetDirectoryName(Path.GetFullPath(executable))!, "GTrackerRuntime", "Godot");
+
+    private static string GetGodotManifestPath(string executable) => Path.Combine(GetGodotComponentRoot(executable), "install.json");
+
+    private static string GetGodotTelemetryPath(string executable) => Path.Combine(GetGodotComponentRoot(executable), "telemetry.tsv");
 
     private static BepInExPackage ResolveBepInExPackage(UnityRuntimeKind runtime)
     {
@@ -3093,11 +3308,14 @@ public partial class MainWindow : Window
         Title = $"GTracker | {profile.DisplayName} Integration";
 
         if (!unitySelected && _telemetryTimer.IsEnabled) StopTelemetryWatch();
+        if (!godotSelected && _godotTelemetryTimer?.IsEnabled == true) StopGodotTelemetryWatch();
         if (announce)
         {
             SetStatus(unitySelected
                 ? "Unity integration workflow selected."
-                : $"{profile.DisplayName} provider foundation selected; engine-specific installation is not implemented yet.");
+                : godotSelected
+                    ? "Godot integration workflow selected. Analyze a Godot 3 export to install discovery."
+                    : $"{profile.DisplayName} provider foundation selected; engine-specific installation is not implemented yet.");
         }
     }
 
@@ -3210,6 +3428,7 @@ public partial class MainWindow : Window
         _unitySetupCancellation?.Cancel();
         _clipTimer.Stop();
         _telemetryTimer.Stop();
+        _godotTelemetryTimer.Stop();
         await StopCaptureAsync();
         await _projectOperationGate.WaitAsync();
         _projectOperationGate.Release();
@@ -3217,6 +3436,8 @@ public partial class MainWindow : Window
         _projectSwitchGate.Release();
         await _unityOperationGate.WaitAsync();
         _unityOperationGate.Release();
+        await _godotOperationGate.WaitAsync();
+        _godotOperationGate.Release();
         _ediApi.Dispose();
         if (PresentationSource.FromVisual(this) is HwndSource source)
         {
