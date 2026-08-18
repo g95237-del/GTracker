@@ -451,6 +451,7 @@ public partial class MainWindow : Window
         var wasUpdating = _updatingUi;
         _updatingUi = true;
         var previousTelemetryAction = (TelemetryActionCombo.SelectedItem as AuthoredAction)?.Name;
+        var previousGodotTelemetryAction = (GodotTelemetryActionCombo.SelectedItem as AuthoredAction)?.Name;
         var orderedActions = _project.Actions
             .Where(action => EdiValidator.NormalizeVariant(action.Variant)
                 .Equals(_activeVariant, StringComparison.OrdinalIgnoreCase))
@@ -465,6 +466,9 @@ public partial class MainWindow : Window
         TelemetryActionCombo.ItemsSource = logicalActions;
         TelemetryActionCombo.SelectedItem = logicalActions.FirstOrDefault(action =>
             action.Name.Equals(previousTelemetryAction, StringComparison.OrdinalIgnoreCase)) ?? logicalActions.FirstOrDefault();
+        GodotTelemetryActionCombo.ItemsSource = logicalActions;
+        GodotTelemetryActionCombo.SelectedItem = logicalActions.FirstOrDefault(action =>
+            action.Name.Equals(previousGodotTelemetryAction, StringComparison.OrdinalIgnoreCase)) ?? logicalActions.FirstOrDefault();
         _updatingUi = wasUpdating;
     }
 
@@ -2317,7 +2321,8 @@ public partial class MainWindow : Window
         SetGodotToolsBusy(true);
         try
         {
-            var result = await Task.Run(() => _godotDiscoveryProvisioner.Install(inspection.ExecutablePath));
+            var configuration = CreateGodotRuntimeConfiguration();
+            var result = await Task.Run(() => _godotDiscoveryProvisioner.Install(inspection.ExecutablePath, configuration));
             if (projectGeneration != Volatile.Read(ref _projectGeneration)) return;
             _project.Game.ExecutablePath = inspection.ExecutablePath;
             _project.Game.TelemetryPath = result.TelemetryPath;
@@ -2412,6 +2417,159 @@ public partial class MainWindow : Window
     {
         if (_godotTelemetryTimer.IsEnabled) StopGodotTelemetryWatch();
         else StartGodotTelemetryWatch(GetGodotTelemetryPath(GodotExecutableText.Text.Trim()));
+    }
+
+    private async void ApplyGodotMappings_Click(object sender, RoutedEventArgs e)
+    {
+        if (!await _godotOperationGate.WaitAsync(0)) return;
+        SetGodotToolsBusy(true);
+        try
+        {
+            var configuration = CreateGodotRuntimeConfiguration();
+            await Task.Run(() => _godotDiscoveryProvisioner.UpdateRuntime(GodotExecutableText.Text.Trim(), configuration));
+            SetStatus($"Applied {_project.Game.TriggerMappings.Count} Godot runtime mapping(s). Launch with EDI running to test playback.");
+        }
+        catch (Exception exception)
+        {
+            SetStatus($"Godot mapping update failed: {exception.Message}", true);
+        }
+        finally
+        {
+            SetGodotToolsBusy(false);
+            _godotOperationGate.Release();
+        }
+    }
+
+    private void UseGodotTelemetryName_Click(object sender, RoutedEventArgs e)
+    {
+        if (IsCurrentSceneLocked())
+        {
+            SetStatus("This scene is locked. Unlock it before renaming it.", true);
+            return;
+        }
+        if (GodotTelemetryList.SelectedItem is not GodotTelemetryEntry entry || string.IsNullOrWhiteSpace(entry.Candidate) ||
+            entry.Kind != "SCENE" && !GodotTelemetryLog.IsRuntimeCandidateEvent(entry.Kind))
+        {
+            SetStatus("Select a Godot scene or AnimationPlayer event first.", true);
+            return;
+        }
+        _correlatedUnityScene = entry.Scene;
+        _correlatedUnityAnimation = entry.Kind == "SCENE" ? string.Empty : entry.Candidate;
+        ApplyRuntimeName(entry.Candidate);
+        UpdateRuntimeCorrelationText();
+        SetStatus($"Scene and script filename derived from Godot {entry.Kind.ToLowerInvariant()} '{entry.Candidate}'.");
+    }
+
+    private async void MapGodotTelemetry_Click(object sender, RoutedEventArgs e)
+    {
+        if (GodotTelemetryList.SelectedItem is not GodotTelemetryEntry entry ||
+            GodotTelemetryActionCombo.SelectedItem is not AuthoredAction action)
+        {
+            SetStatus("Select a discovered Godot event and a saved authored scene first.", true);
+            return;
+        }
+        var kind = entry.Kind == "SCENE" ? UnityTriggerKind.Scene :
+            GodotTelemetryLog.IsRuntimeCandidateEvent(entry.Kind) ? UnityTriggerKind.AnimationClip : (UnityTriggerKind?)null;
+        if (kind is null || string.IsNullOrWhiteSpace(entry.Candidate))
+        {
+            SetStatus("Only Godot scene and AnimationPlayer events can be mapped.", true);
+            return;
+        }
+        var duration = GodotTelemetryLog.TryGetPlaybackTiming(entry, out var timing)
+            ? Math.Max(1, (int)Math.Round(timing.CycleDuration.TotalMilliseconds)) : (int?)null;
+        _project.Game.SetTriggerMapping(kind.Value, entry.Candidate, action.Name,
+            kind == UnityTriggerKind.AnimationClip ? entry.ObjectPath : string.Empty, duration);
+        UpdateTriggerMappingStatus();
+        if (_projectDirectory is null || await SaveProjectAsync())
+            SetStatus($"Mapped Godot {kind} '{entry.Candidate}' to '{action.Name}'. Close the game and click Apply mappings.");
+    }
+
+    private async void CaptureGodotCycle_Click(object sender, RoutedEventArgs e)
+    {
+        var session = _captureSession;
+        if (session is null)
+        {
+            SetStatus("Start rolling capture before capturing a Godot animation cycle.", true);
+            return;
+        }
+        if (GodotTelemetryList.SelectedItem is not GodotTelemetryEntry entry ||
+            !GodotTelemetryLog.TryGetPlaybackTiming(entry, out var timing) || string.IsNullOrWhiteSpace(entry.Candidate))
+        {
+            SetStatus("Select a timed Godot AnimationPlayer event first.", true);
+            return;
+        }
+        if (Interlocked.Exchange(ref _captureActionRunning, 1) != 0) return;
+        CaptureActionButton.IsEnabled = false;
+        CaptureGodotCycleButton.IsEnabled = false;
+        var projectGeneration = Volatile.Read(ref _projectGeneration);
+        try
+        {
+            var startUtc = timing.GetCycleStart(entry.Timestamp);
+            var endUtc = startUtc + timing.CycleDuration;
+            var durationText = timing.CycleDuration.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture);
+            SetStatus($"Capturing Godot '{entry.Candidate}' cycle ({durationText} seconds) from runtime timing...");
+            var deadline = endUtc.AddSeconds(3);
+            while (session.Buffer.LatestCapturedAtUtc is not { } latest || latest < endUtc)
+            {
+                if (DateTimeOffset.UtcNow >= deadline || !ReferenceEquals(session, _captureSession) ||
+                    projectGeneration != Volatile.Read(ref _projectGeneration)) break;
+                await Task.Delay(50);
+            }
+            if (!ReferenceEquals(session, _captureSession) || projectGeneration != Volatile.Read(ref _projectGeneration))
+            {
+                SetStatus("Capture session ended before the Godot animation cycle was complete.", true);
+                return;
+            }
+            if (session.Buffer.EarliestCapturedAtUtc is not { } earliest || earliest > startUtc.AddMilliseconds(250))
+            {
+                SetStatus("The selected Godot cycle has fallen outside the rolling capture buffer.", true);
+                return;
+            }
+            if (session.Buffer.LatestCapturedAtUtc is not { } latestCaptured || latestCaptured < endUtc)
+            {
+                SetStatus("Encoded frames did not reach the end of the selected Godot cycle.", true);
+                return;
+            }
+            var clip = session.Buffer.Snapshot(startUtc, endUtc);
+            if (clip.Frames.Count == 0)
+            {
+                SetStatus("No encoded frames were available for the selected Godot cycle.", true);
+                return;
+            }
+            PrepareNewSceneForCapture();
+            SetWorkingClip(clip, resetTracks: true, startUtc, endUtc);
+            _correlatedUnityScene = entry.Scene;
+            _correlatedUnityAnimation = entry.Candidate;
+            _correlatedAnimationCandidates = [entry.Candidate];
+            _pendingCapturedTriggerMapping = new UnityTriggerMapping
+            {
+                Kind = UnityTriggerKind.AnimationClip,
+                Candidate = entry.Candidate,
+                ObjectPath = entry.ObjectPath,
+                CycleDurationMilliseconds = Math.Max(1, (int)Math.Round(timing.CycleDuration.TotalMilliseconds))
+            };
+            LoopCheck.IsChecked = timing.IsLooping;
+            if (IsPlaceholderSceneName(ActionNameText.Text)) ApplyRuntimeName(entry.Candidate);
+            UpdateRuntimeCorrelationText();
+            UpdateTriggerMappingStatus();
+            SetStatus($"Captured Godot '{entry.Candidate}' as an exact {durationText}-second cycle ({clip.Frames.Count} frames).");
+        }
+        finally
+        {
+            CaptureActionButton.IsEnabled = true;
+            CaptureGodotCycleButton.IsEnabled = true;
+            Interlocked.Exchange(ref _captureActionRunning, 0);
+        }
+    }
+
+    private GodotRuntimeConfiguration CreateGodotRuntimeConfiguration()
+    {
+        var actions = _project.GetLogicalActions().ToDictionary(action => action.Name, StringComparer.OrdinalIgnoreCase);
+        var mappings = _project.Game.TriggerMappings.Where(mapping => actions.ContainsKey(mapping.ActionName))
+            .Select(mapping => new GodotRuntimeMapping(mapping.Kind, mapping.Candidate, mapping.ActionName,
+                mapping.ObjectPath, mapping.CycleDurationMilliseconds,
+                actions[mapping.ActionName].Type == EdiGalleryType.Reaction)).ToArray();
+        return new(EdiBaseUrlText.Text.Trim(), mappings);
     }
 
     private void ModPresetCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -3058,18 +3216,19 @@ public partial class MainWindow : Window
     {
         if (Volatile.Read(ref _projectTransitionRunning) != 0) return;
         if (_project.Game.TriggerMappings.Count == 0) return;
-        if (MessageBox.Show(this, "Clear all discovered Unity trigger mappings for this project?", "Clear mappings",
+        if (MessageBox.Show(this, "Clear all discovered runtime trigger mappings for this project?", "Clear mappings",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         _project.Game.TriggerMappings.Clear();
         UpdateTriggerMappingStatus();
         if (_projectDirectory is null || await SaveProjectAsync())
-            SetStatus("Unity trigger mappings cleared. Use Build + install to apply the change.");
+            SetStatus("Runtime trigger mappings cleared. Rebuild Unity or apply Godot mappings to update the installed integration.");
     }
 
     private void UpdateTriggerMappingStatus()
     {
         var pending = _pendingCapturedTriggerMapping is null ? string.Empty : " | pending save: 1";
         TriggerMappingStatusText.Text = $"Project-wide mappings: {_project.Game.TriggerMappings.Count}{pending}";
+        GodotMappingStatusText.Text = $"Project-wide mappings: {_project.Game.TriggerMappings.Count}{pending}";
     }
 
     private void StopTelemetryWatch(bool clearOutput = false)
@@ -3162,6 +3321,7 @@ public partial class MainWindow : Window
             RemoveGodotDiscoveryButton.IsEnabled = false;
             LaunchVerifyGodotButton.IsEnabled = false;
             WatchGodotTelemetryButton.IsEnabled = false;
+            ApplyGodotMappingsButton.IsEnabled = false;
         }
     }
 
@@ -3178,6 +3338,7 @@ public partial class MainWindow : Window
         RemoveGodotDiscoveryButton.IsEnabled = installed;
         LaunchVerifyGodotButton.IsEnabled = installed;
         WatchGodotTelemetryButton.IsEnabled = installed && File.Exists(GetGodotTelemetryPath(executable));
+        ApplyGodotMappingsButton.IsEnabled = installed;
         WatchGodotTelemetryButton.Content = _godotTelemetryTimer?.IsEnabled == true ? "Stop watching" : "Watch discovery";
     }
 

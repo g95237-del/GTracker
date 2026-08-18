@@ -37,7 +37,7 @@ public static class EngineUiCatalog
             "#0B1120", "#111827", "#172033", "#0F172A", "#030712", "#E60B1120",
             "#334155", "#475569", "#F1F5F9", "#A8B4C5", "#C7D5E8", "#14B8A6", "#0F766E", "#0D9488"),
         Create(IntegrationEngine.Godot, "Godot", "PCK + AUTOLOAD", "GODOT INTEGRATION",
-            "Godot 3 target analysis and reversible discovery-autoload installation are available. Godot 4 installation remains pending candidate validation.",
+            "Godot 3 analysis, reversible autoload installation, exact-cycle capture, explicit mappings, and EDI playback are available. Godot 4 installation remains pending candidate validation.",
             "Inspect PCK  /  Verify export  /  Install autoload  /  Discover scene + animation signals",
             "#071525", "#0B2035", "#102A45", "#0A1A2C", "#030B14", "#E6071525",
             "#244D70", "#3975A4", "#F2F8FC", "#A8C5DB", "#C8E2F3", "#478CBF", "#28628F", "#56A7DE"),

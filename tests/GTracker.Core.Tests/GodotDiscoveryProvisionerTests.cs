@@ -1,5 +1,6 @@
 using System.Text;
 using GTracker.Core.Godot;
+using GTracker.Core.Projects;
 
 namespace GTracker.Core.Tests;
 
@@ -131,6 +132,47 @@ public sealed class GodotDiscoveryProvisionerTests
             var second = provisioner.Install(executable);
 
             Assert.Equal("preserved telemetry\n", File.ReadAllText(second.TelemetryPath).Replace("\r\n", "\n"));
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void UpdateRuntime_CompilesMappingsWithoutChangingOverrideOrTelemetry()
+    {
+        var directory = CreateGodot3Target();
+        try
+        {
+            var executable = Path.Combine(directory, "Game.exe");
+            var provisioner = new GodotDiscoveryProvisioner();
+            var installed = provisioner.Install(executable);
+            var originalOverride = File.ReadAllBytes(installed.OverrideConfigPath);
+            File.WriteAllText(installed.TelemetryPath, "preserved\n");
+            var runtime = new GodotRuntimeConfiguration("http://127.0.0.1:5000/Edi/",
+            [
+                new(UnityTriggerKind.Scene, "res://Main Menu.tscn", "menu action", "", null, false),
+                new(UnityTriggerKind.AnimationClip, "Idle", "idle/action", "/root/Main/Player", 1200, false)
+            ]);
+
+            provisioner.UpdateRuntime(executable, runtime);
+
+            var script = File.ReadAllText(installed.ScriptPath);
+            Assert.Contains("http://127.0.0.1:5000/Edi", script);
+            Assert.Contains("resmainmenutscn", script);
+            Assert.Contains("menu action", script);
+            Assert.Contains("root/Main/Player", script);
+            Assert.Contains("HTTPRequest.new()", script);
+            Assert.Contains("HTTPClient.METHOD_POST", script);
+            Assert.Contains("OS.get_system_time_msecs()", script);
+            Assert.Contains("length / rate", script);
+            Assert.Contains("func _resume_runtime", script);
+            Assert.Contains("func _queue_play", script);
+            Assert.Equal(originalOverride, File.ReadAllBytes(installed.OverrideConfigPath));
+            Assert.Equal("preserved\n", File.ReadAllText(installed.TelemetryPath).Replace("\r\n", "\n"));
+
+            provisioner.Uninstall(executable);
         }
         finally
         {

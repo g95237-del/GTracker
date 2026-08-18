@@ -14,8 +14,38 @@ public sealed record GodotTelemetryEntry(
     public string DisplayText => $"{Timestamp:HH:mm:ss}  {Kind,-18}  {Candidate}  {ObjectPath}";
 }
 
+public sealed record GodotPlaybackTiming(TimeSpan CycleDuration, TimeSpan Phase, bool IsLooping)
+{
+    public DateTimeOffset GetCycleStart(DateTimeOffset timestamp) => timestamp - Phase;
+}
+
 public static class GodotTelemetryLog
 {
+    public static bool IsRuntimeCandidateEvent(string kind) =>
+        kind is "ANIMATION_START" or "ANIMATION_LOOP" or "ANIMATION_UPDATE" or "ANIMATION_STOP";
+
+    public static bool IsTimedPlaybackEvent(string kind) =>
+        kind is "ANIMATION_START" or "ANIMATION_LOOP" or "ANIMATION_UPDATE";
+
+    public static bool TryGetPlaybackTiming(GodotTelemetryEntry item, out GodotPlaybackTiming timing)
+    {
+        timing = default!;
+        if (!IsTimedPlaybackEvent(item.Kind) || string.IsNullOrWhiteSpace(item.Details)) return false;
+        var fields = item.Details.Split(';', StringSplitOptions.RemoveEmptyEntries)
+            .Select(field => field.Split('=', 2))
+            .Where(pair => pair.Length == 2)
+            .ToDictionary(pair => pair[0], pair => pair[1], StringComparer.OrdinalIgnoreCase);
+        if (!fields.TryGetValue("cycleDurationSeconds", out var durationText) ||
+            !double.TryParse(durationText, NumberStyles.Float, CultureInfo.InvariantCulture, out var duration) ||
+            !double.IsFinite(duration) || duration <= 0) return false;
+        var phase = fields.TryGetValue("phaseSeconds", out var phaseText) &&
+                    double.TryParse(phaseText, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedPhase) &&
+                    double.IsFinite(parsedPhase) ? Math.Clamp(parsedPhase, 0, duration) : 0;
+        var looping = fields.TryGetValue("loop", out var loopText) && bool.TryParse(loopText, out var parsedLoop) && parsedLoop;
+        timing = new(TimeSpan.FromSeconds(duration), TimeSpan.FromSeconds(phase), looping);
+        return true;
+    }
+
     public static IReadOnlyList<GodotTelemetryEntry> Read(string path)
     {
         var cursor = new GodotTelemetryCursor();

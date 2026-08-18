@@ -5,6 +5,18 @@ namespace GTracker.Core.Tests;
 public sealed class GodotTelemetryLogTests
 {
     [Fact]
+    public void PlaybackTiming_ParsesAnimationUpdate()
+    {
+        var entry = new GodotTelemetryEntry(DateTimeOffset.UtcNow, "ANIMATION_UPDATE", "scene", "/root/player",
+            "idle", "phaseSeconds=0.25;cycleDurationSeconds=1.5;speed=1;loop=true");
+
+        Assert.True(GodotTelemetryLog.TryGetPlaybackTiming(entry, out var timing));
+        Assert.Equal(TimeSpan.FromSeconds(1.5), timing.CycleDuration);
+        Assert.Equal(TimeSpan.FromSeconds(0.25), timing.Phase);
+        Assert.True(timing.IsLooping);
+    }
+
+    [Fact]
     public async Task Read_ParsesCompleteRecordsAndIgnoresMalformedTail()
     {
         var directory = CreateTemporaryDirectory();

@@ -22,7 +22,8 @@ public sealed class GodotDiscoveryProvisioner
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
     private readonly GodotGameInspector _inspector = new();
 
-    public GodotDiscoveryInstallResult Install(string executablePath, CancellationToken cancellationToken = default)
+    public GodotDiscoveryInstallResult Install(string executablePath, GodotRuntimeConfiguration? runtime = null,
+        CancellationToken cancellationToken = default)
     {
         var inspection = _inspector.Inspect(executablePath);
         if (!inspection.IsSupported) throw new InvalidOperationException("A supported unencrypted Godot export is required.");
@@ -45,7 +46,7 @@ public sealed class GodotDiscoveryProvisioner
         var overrideExisted = File.Exists(overridePath);
         var telemetryExisted = File.Exists(telemetryPath);
         var originalOverride = overrideExisted ? File.ReadAllBytes(overridePath) : [];
-        var script = GodotDiscoveryScript.Create(inspection.EngineMajorVersion);
+        var script = GodotDiscoveryScript.Create(inspection.EngineMajorVersion, runtime);
         var installedOverride = GodotOverrideConfig.AddAutoload(originalOverride, scriptPath);
         var manifest = new GodotDiscoveryManifest
         {
@@ -87,6 +88,49 @@ public sealed class GodotDiscoveryProvisioner
         }
 
         return new(gameRoot, overridePath, scriptPath, telemetryPath, manifestPath, overrideExisted);
+    }
+
+    public GodotDiscoveryInstallResult UpdateRuntime(string executablePath, GodotRuntimeConfiguration runtime,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(runtime);
+        var inspection = _inspector.Inspect(executablePath);
+        if (!inspection.IsSupported || inspection.EngineMajorVersion != 3)
+            throw new InvalidOperationException("A supported unencrypted Godot 3 export is required.");
+        EnsureGameClosed(inspection.ExecutablePath);
+        var gameRoot = Path.GetDirectoryName(inspection.ExecutablePath)!;
+        var componentRoot = Path.Combine(gameRoot, RuntimeDirectoryName, ComponentDirectoryName);
+        var scriptPath = Path.Combine(componentRoot, "gtracker_discovery.gd");
+        var telemetryPath = Path.Combine(componentRoot, "telemetry.tsv");
+        var manifestPath = Path.Combine(componentRoot, ManifestFileName);
+        var overridePath = Path.Combine(gameRoot, "override.cfg");
+        ValidateManagedPaths(gameRoot, componentRoot, scriptPath, telemetryPath, manifestPath, overridePath);
+        if (!File.Exists(manifestPath)) throw new FileNotFoundException("Install Godot discovery before applying mappings.", manifestPath);
+        var originalManifestBytes = File.ReadAllBytes(manifestPath);
+        var manifest = JsonSerializer.Deserialize<GodotDiscoveryManifest>(originalManifestBytes,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? throw new InvalidDataException("Godot discovery manifest is invalid.");
+        ValidateManifest(manifest, inspection.ExecutablePath, gameRoot);
+        if (!File.Exists(overridePath) || Hash(File.ReadAllBytes(overridePath)) != manifest.InstalledOverrideSha256)
+            throw new IOException("override.cfg changed after installation. Runtime update was stopped to preserve those edits.");
+        if (!File.Exists(scriptPath) || Hash(File.ReadAllBytes(scriptPath)) != manifest.ScriptSha256)
+            throw new IOException("The installed Godot discovery script was modified. Runtime update was stopped.");
+
+        var installedScriptHash = manifest.ScriptSha256;
+        var script = GodotDiscoveryScript.Create(inspection.EngineMajorVersion, runtime);
+        var scriptBytes = Encoding.UTF8.GetBytes(script);
+        manifest.ScriptSha256 = Hash(scriptBytes);
+        manifest.RuntimeUpdatedAt = DateTimeOffset.UtcNow;
+        var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions);
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsureGameClosed(inspection.ExecutablePath);
+        ValidateManagedPaths(gameRoot, scriptPath, manifestPath, overridePath);
+        if (Hash(File.ReadAllBytes(overridePath)) != manifest.InstalledOverrideSha256)
+            throw new IOException("override.cfg changed while the runtime update was being prepared.");
+        if (Hash(File.ReadAllBytes(manifestPath)) != Hash(originalManifestBytes) ||
+            Hash(File.ReadAllBytes(scriptPath)) != installedScriptHash)
+            throw new IOException("The Godot runtime changed while the update was being prepared.");
+        RemoveTransactional([new(scriptPath, scriptBytes), new(manifestPath, manifestBytes)]);
+        return new(gameRoot, overridePath, scriptPath, telemetryPath, manifestPath, manifest.OverrideExistedBeforeInstall);
     }
 
     public void Uninstall(string executablePath)
@@ -400,6 +444,7 @@ public sealed class GodotDiscoveryProvisioner
         public string ScriptSha256 { get; set; } = string.Empty;
         public string BackupRelativePath { get; set; } = string.Empty;
         public DateTimeOffset InstalledAt { get; set; }
+        public DateTimeOffset? RuntimeUpdatedAt { get; set; }
     }
 
     private sealed record RemovalChange(string Path, byte[]? Replacement);
