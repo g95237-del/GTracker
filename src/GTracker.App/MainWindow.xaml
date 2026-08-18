@@ -14,11 +14,11 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1" CornerRadius="6" Padding="8" Margin="0,0,0,8">
+        <Border Grid.Row="0" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource EdgeBrush}" BorderThickness="1" CornerRadius="6" Padding="8" Margin="0,0,0,8">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="270"/>
-                    <ColumnDefinition Width="210"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="210"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="PROJECT" Style="{StaticResource SectionHeaderStyle}" VerticalAlignment="Center" Margin="4,0,8,0"/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
@@ -29,12 +29,23 @@
                 <ComboBox Grid.Column="2" x:Name="RecentProjectsCombo" Margin="6,0" SelectionChanged="RecentProjectsCombo_SelectionChanged"
                           ToolTip="Open a recently used integration project"/>
                 <TextBox Grid.Column="3" x:Name="ProjectNameText" Text="Studio Integration" ToolTip="Project name"/>
-                <TextBlock Grid.Column="4" x:Name="ProjectPathText" Text="No project folder selected" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/>
-                <CheckBox Grid.Column="5" x:Name="TopmostCheck" Content="Keep studio on top" VerticalAlignment="Center" Checked="TopmostCheck_Changed" Unchecked="TopmostCheck_Changed"/>
+                <TextBlock Grid.Column="4" x:Name="ProjectPathText" Text="No project folder selected" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/>
+                <Border Grid.Column="5" x:Name="EngineIdentityBorder" Background="{DynamicResource AccentDarkBrush}"
+                        BorderBrush="{DynamicResource AccentBrush}" BorderThickness="1" CornerRadius="4" Padding="7,3" Margin="4,0">
+                    <StackPanel Orientation="Horizontal">
+                        <StackPanel Margin="0,0,7,0" VerticalAlignment="Center">
+                            <TextBlock Text="ENGINE" FontSize="9" FontWeight="Bold" Foreground="{DynamicResource MutedTextBrush}"/>
+                            <TextBlock x:Name="EngineMarkerText" Text="BEPINEX" FontSize="9" FontWeight="SemiBold"/>
+                        </StackPanel>
+                        <ComboBox x:Name="EngineCombo" Width="142" DisplayMemberPath="DisplayName"
+                                  SelectionChanged="EngineCombo_SelectionChanged" ToolTip="Switch the active game-engine integration workflow"/>
+                    </StackPanel>
+                </Border>
+                <CheckBox Grid.Column="6" x:Name="TopmostCheck" Content="Keep studio on top" VerticalAlignment="Center" Checked="TopmostCheck_Changed" Unchecked="TopmostCheck_Changed"/>
             </Grid>
         </Border>
 
-        <Border Grid.Row="1" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1" CornerRadius="6" Padding="8" Margin="0,0,0,8">
+        <Border Grid.Row="1" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource EdgeBrush}" BorderThickness="1" CornerRadius="6" Padding="8" Margin="0,0,0,8">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="310"/><ColumnDefinition Width="Auto"/>
@@ -49,7 +60,7 @@
                             ToolTip="Start capture, then restore and focus the selected game window"/>
                     <Button x:Name="StopCaptureButton" Content="Stop" Click="StopCapture_Click"/>
                 </StackPanel>
-                <TextBlock Grid.Column="3" x:Name="CaptureStatsText" Text="Capture stopped" VerticalAlignment="Center" HorizontalAlignment="Center" FontFamily="Consolas" Foreground="{StaticResource AccentBrush}"/>
+                <TextBlock Grid.Column="3" x:Name="CaptureStatsText" Text="Capture stopped" VerticalAlignment="Center" HorizontalAlignment="Center" FontFamily="Consolas" Foreground="{DynamicResource AccentBrush}"/>
                 <Button Grid.Column="4" Content="STOP EDI  Ctrl+Shift+F12" Style="{StaticResource DangerButtonStyle}" Click="StopEdi_Click"/>
             </Grid>
         </Border>
@@ -60,15 +71,15 @@
                 <ColumnDefinition Width="1*"/>
             </Grid.ColumnDefinitions>
 
-            <Border Grid.Column="0" Background="{StaticResource PreviewBrush}" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1" CornerRadius="6" ClipToBounds="True" Margin="0,0,8,0">
+            <Border Grid.Column="0" Background="{DynamicResource PreviewBrush}" BorderBrush="{DynamicResource EdgeBrush}" BorderThickness="1" CornerRadius="6" ClipToBounds="True" Margin="0,0,8,0">
                 <Grid>
                     <Image x:Name="PreviewImage" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
                     <local:LinearSimulatorOverlay x:Name="SimulatorOverlay" Panel.ZIndex="1"
                                                   ImageSource="{Binding Source, ElementName=PreviewImage}"/>
-                    <Border Panel.ZIndex="2" HorizontalAlignment="Left" VerticalAlignment="Top" Background="{StaticResource PreviewOverlayBrush}" CornerRadius="0,0,5,0" Padding="9,6">
+                    <Border Panel.ZIndex="2" HorizontalAlignment="Left" VerticalAlignment="Top" Background="{DynamicResource PreviewOverlayBrush}" CornerRadius="0,0,5,0" Padding="9,6">
                         <TextBlock x:Name="PreviewModeText" Text="LIVE PREVIEW" FontWeight="SemiBold"/>
                     </Border>
-                    <Border Panel.ZIndex="2" HorizontalAlignment="Center" VerticalAlignment="Bottom" Background="{StaticResource PreviewOverlayBrush}" CornerRadius="5,5,0,0" Padding="10,6" Margin="0,0,0,0">
+                    <Border Panel.ZIndex="2" HorizontalAlignment="Center" VerticalAlignment="Bottom" Background="{DynamicResource PreviewOverlayBrush}" CornerRadius="5,5,0,0" Padding="10,6" Margin="0,0,0,0">
                         <StackPanel>
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                                 <Button Content="Live" Click="ReturnLive_Click"/>
@@ -77,11 +88,11 @@
                                 <Button Content="Mark out" Click="MarkOut_Click"/>
                                 <Button Content="Apply trim" Click="ApplyTrim_Click"/>
                                 <TextBlock x:Name="ClipTimeText" Text="00:00.000 / 00:00.000" FontFamily="Consolas" VerticalAlignment="Center" Margin="12,0,4,0"/>
-                                <TextBlock x:Name="PlaybackRateText" Text="1.0x" FontFamily="Consolas" Foreground="{StaticResource AccentBrush}" VerticalAlignment="Center" Margin="8,0,2,0"/>
+                                <TextBlock x:Name="PlaybackRateText" Text="1.0x" FontFamily="Consolas" Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" Margin="8,0,2,0"/>
                             </StackPanel>
                             <Slider x:Name="ClipSlider" Width="620" Minimum="0" Maximum="1" ValueChanged="ClipSlider_ValueChanged" IsMoveToPointEnabled="True"/>
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                <TextBlock x:Name="TrimText" Text="Trim: 0 ms to 0 ms" VerticalAlignment="Center" Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,0,12,0"/>
+                                <TextBlock x:Name="TrimText" Text="Trim: 0 ms to 0 ms" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" Margin="0,0,12,0"/>
                                 <CheckBox x:Name="SimulatorCheck" Content="Simulator" IsChecked="True" VerticalAlignment="Center"
                                           Checked="SimulatorCheck_Changed" Unchecked="SimulatorCheck_Changed"/>
                                 <Button Content="Reset overlay" Click="ResetSimulator_Click" Padding="7,2"/>
@@ -91,7 +102,7 @@
                 </Grid>
             </Border>
 
-            <Border Grid.Column="1" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1" CornerRadius="6">
+            <Border Grid.Column="1" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource EdgeBrush}" BorderThickness="1" CornerRadius="6">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="12">
                         <DockPanel>
@@ -123,12 +134,12 @@
                                     ToolTip="When used inside a fullscreen game, the first press starts foreground rolling capture and later presses capture scenes"/>
                         </WrapPanel>
                         <TextBlock x:Name="RuntimeCorrelationText" Text="Runtime match: no Unity telemetry for this clip"
-                                   Foreground="{StaticResource MutedTextBrush}" TextWrapping="Wrap" Margin="3,1" FontSize="11"/>
+                                   Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="3,1" FontSize="11"/>
 
                         <DockPanel Margin="3,10,3,2">
                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                                 <TextBlock x:Name="SceneLockStatusText" Text="Unlocked" VerticalAlignment="Center" Margin="4,0"
-                                           Foreground="{StaticResource MutedTextBrush}"/>
+                                           Foreground="{DynamicResource MutedTextBrush}"/>
                                 <Button x:Name="SceneLockButton" Content="Save + lock" Click="SceneLock_Click" Padding="7,2"
                                         ToolTip="Save the current scene and protect it from edits, overwrites, and deletion"/>
                             </StackPanel>
@@ -158,9 +169,10 @@
                             <Button Content="Preview script" Click="PreviewScript_Click"/>
                             <Button x:Name="UseDetectedNameButton" Content="Use detected name" Click="UseDetectedName_Click"/>
                             <Button x:Name="SaveActionButton" Content="Save scene" Click="SaveAction_Click" Style="{StaticResource PrimaryButtonStyle}"/>
-                            <TextBlock x:Name="PointCountText" Text="0 points" VerticalAlignment="Center" Margin="8,0" Foreground="{StaticResource MutedTextBrush}"/>
+                            <TextBlock x:Name="PointCountText" Text="0 points" VerticalAlignment="Center" Margin="8,0" Foreground="{DynamicResource MutedTextBrush}"/>
                         </WrapPanel>
 
+                        <StackPanel x:Name="UnityIntegrationPanel">
                         <Separator Margin="0,10"/>
                         <TextBlock Text="UNITY MOD TARGET" Style="{StaticResource SectionHeaderStyle}"/>
                         <DockPanel>
@@ -172,7 +184,7 @@
                             <ComboBox x:Name="ModPresetCombo" SelectionChanged="ModPresetCombo_SelectionChanged"
                                       ToolTip="Discovery is safest; convention presets match Unity scene or animation names to authored EDI scenes"/>
                         </DockPanel>
-                        <TextBlock x:Name="ModPresetDescriptionText" Foreground="{StaticResource MutedTextBrush}" TextWrapping="Wrap" Margin="3,1,3,3" FontSize="11"/>
+                        <TextBlock x:Name="ModPresetDescriptionText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="3,1,3,3" FontSize="11"/>
                         <WrapPanel>
                             <Button x:Name="AnalyzeGameButton" Content="Analyze Unity runtime" Click="AnalyzeGame_Click"/>
                             <Button x:Name="InstallBepInExButton" Content="Install BepInEx + initialize" Click="InstallBepInEx_Click"
@@ -185,7 +197,7 @@
                             <Button x:Name="BuildInstallButton" Content="Build + install" Click="BuildInstallMod_Click" Style="{StaticResource PrimaryButtonStyle}"/>
                             <Button x:Name="WatchTelemetryButton" Content="Watch discovery" Click="WatchTelemetry_Click"/>
                         </WrapPanel>
-                        <TextBlock x:Name="UnityStatusText" Text="Not analyzed" Margin="3,2" TextWrapping="Wrap" Foreground="{StaticResource WarningTextBrush}"/>
+                        <TextBlock x:Name="UnityStatusText" Text="Not analyzed" Margin="3,2" TextWrapping="Wrap" Foreground="{DynamicResource WarningTextBrush}"/>
                         <DockPanel Margin="3,4,3,0">
                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                                 <Button x:Name="PauseTelemetryButton" Content="Pause output" Click="PauseTelemetry_Click" IsEnabled="False"
@@ -194,13 +206,13 @@
                                         ToolTip="Clear this view and continue from the next event; the telemetry file is not deleted"/>
                             </StackPanel>
                             <TextBlock x:Name="TelemetryOutputStatusText" Text="Stopped | 0 shown" VerticalAlignment="Center"
-                                       Foreground="{StaticResource MutedTextBrush}"/>
+                                       Foreground="{DynamicResource MutedTextBrush}"/>
                         </DockPanel>
                         <ListBox x:Name="UnityTelemetryList" Height="180" MinHeight="120" MaxHeight="520" Margin="3" FontFamily="Consolas" FontSize="11"
                                   ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto"
                                   ScrollViewer.ScrollChanged="UnityTelemetryList_ScrollChanged"
                                    ToolTip="Live scene, animation, Timeline, and supported framework candidates emitted by the installed discovery plugin"/>
-                        <Thumb Height="7" Margin="3,0" Cursor="SizeNS" Background="{StaticResource EdgeBrush}"
+                        <Thumb Height="7" Margin="3,0" Cursor="SizeNS" Background="{DynamicResource EdgeBrush}"
                                DragDelta="TelemetryResize_DragDelta" ToolTip="Drag to resize the telemetry watcher"/>
                         <WrapPanel Margin="0,1">
                             <Button Content="Hide selected" Click="SuppressTelemetrySelected_Click" Padding="7,2"
@@ -212,7 +224,7 @@
                             <Button Content="Reset filters" Click="ClearTelemetrySuppressions_Click" Padding="7,2"
                                     ToolTip="Show all event streams again and reload recent telemetry history"/>
                             <TextBlock x:Name="TelemetryFilterStatusText" Text="No hidden events" VerticalAlignment="Center" Margin="5,0"
-                                       Foreground="{StaticResource MutedTextBrush}" FontSize="11"/>
+                                       Foreground="{DynamicResource MutedTextBrush}" FontSize="11"/>
                         </WrapPanel>
                         <DockPanel>
                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
@@ -226,34 +238,59 @@
                         </DockPanel>
                         <DockPanel>
                             <Button DockPanel.Dock="Right" Content="Clear mappings" Click="ClearTriggerMappings_Click" Padding="7,2"/>
-                            <TextBlock x:Name="TriggerMappingStatusText" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center" Margin="3"/>
+                            <TextBlock x:Name="TriggerMappingStatusText" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="3"/>
                         </DockPanel>
+                        </StackPanel>
+
+                        <StackPanel x:Name="EngineFoundationPanel" Visibility="Collapsed">
+                            <Separator Margin="0,10"/>
+                            <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource AccentBrush}"
+                                    BorderThickness="1" CornerRadius="5" Padding="12" Margin="3,0">
+                                <StackPanel>
+                                    <DockPanel>
+                                        <Border DockPanel.Dock="Right" Background="{DynamicResource AccentDarkBrush}" CornerRadius="3" Padding="7,3">
+                                            <TextBlock Text="PROVIDER FOUNDATION" FontSize="9" FontWeight="Bold"/>
+                                        </Border>
+                                        <TextBlock x:Name="EngineWorkflowTitleText" Text="ENGINE INTEGRATION"
+                                                   Style="{StaticResource SectionHeaderStyle}" FontSize="13" VerticalAlignment="Center"/>
+                                    </DockPanel>
+                                    <TextBlock x:Name="EngineWorkflowSummaryText" Margin="0,10,0,0" TextWrapping="Wrap"/>
+                                    <TextBlock x:Name="EngineWorkflowStepsText" Margin="0,8,0,0" TextWrapping="Wrap"
+                                               Foreground="{DynamicResource AccentBrush}" FontFamily="Consolas" FontSize="11"/>
+                                    <Border Background="{DynamicResource InputBrush}" BorderBrush="{DynamicResource EdgeBrush}"
+                                            BorderThickness="1" CornerRadius="3" Padding="9" Margin="0,12,0,0">
+                                        <TextBlock Text="The shared capture, scene authoring, funscript, variant, validation, and Gallery export tools remain available. Engine-specific inspection and deployment controls will appear here as each provider is implemented."
+                                                   TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}" FontSize="11"/>
+                                    </Border>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
                     </StackPanel>
                 </ScrollViewer>
             </Border>
         </Grid>
 
-        <Border Grid.Row="3" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1" CornerRadius="6" Margin="0,8,0,0" Padding="8">
+        <Border Grid.Row="3" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource EdgeBrush}" BorderThickness="1" CornerRadius="6" Margin="0,8,0,0" Padding="8">
             <Grid>
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                 <DockPanel>
                     <TextBlock DockPanel.Dock="Left" Text="FUNSCRIPT CURVE" Style="{StaticResource SectionHeaderStyle}"/>
                     <Button DockPanel.Dock="Right" Content="OFS keys" Click="ShowShortcuts_Click" Padding="7,2" Margin="8,-3,0,-3"/>
                     <TextBlock x:Name="TimelineCursorText" DockPanel.Dock="Right" Text="0 ms" FontFamily="Consolas"/>
-                    <TextBlock Text="  Click/drag one point  |  Right-click delete  |  Space play/pause  |  Numpad sets position" Foreground="{StaticResource MutedTextBrush}"/>
+                    <TextBlock Text="  Click/drag one point  |  Right-click delete  |  Space play/pause  |  Numpad sets position" Foreground="{DynamicResource MutedTextBrush}"/>
                 </DockPanel>
                 <local:FunscriptTimeline x:Name="Timeline" Grid.Row="1" Margin="0,6,0,0" Focusable="True"/>
             </Grid>
         </Border>
 
-        <Border Grid.Row="4" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1" CornerRadius="6" Padding="7" Margin="0,8,0,0">
+        <Border Grid.Row="4" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource EdgeBrush}" BorderThickness="1" CornerRadius="6" Padding="7" Margin="0,8,0,0">
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="250"/></Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Orientation="Horizontal">
                     <Button Content="Validate" Click="Validate_Click"/>
                     <Button Content="Export EDI gallery" Click="Export_Click" Style="{StaticResource PrimaryButtonStyle}"/>
                 </StackPanel>
-                <TextBlock Grid.Column="1" x:Name="StatusText" Text="Create or open a project, then start rolling capture." Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/>
+                <TextBlock Grid.Column="1" x:Name="StatusText" Text="Create or open a project, then start rolling capture." Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/>
                 <StackPanel Grid.Column="2" Orientation="Horizontal">
                     <Button Content="Check EDI" Click="CheckEdi_Click"/>
                     <Button Content="Test selected" Click="TestPlay_Click"/>

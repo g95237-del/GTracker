@@ -17,6 +17,7 @@ using GTracker.App.Capture;
 using GTracker.App.Controls;
 using GTracker.App.Edi;
 using GTracker.App.Projects;
+using GTracker.App.Shell;
 using GTracker.Core.Edi;
 using GTracker.Core.Projects;
 using GTracker.Core.Unity;
@@ -36,6 +37,7 @@ public partial class MainWindow : Window
     private readonly ProjectStore _projectStore = new();
     private readonly ClipArchive _clipArchive = new();
     private readonly RecentProjectStore _recentProjectStore = new();
+    private readonly EnginePreferenceStore _enginePreferenceStore = new();
     private readonly EdiValidator _validator = new();
     private readonly EdiExporter _exporter = new();
     private readonly EdiApiClient _ediApi = new();
@@ -89,6 +91,7 @@ public partial class MainWindow : Window
     private bool _telemetryOutputPaused;
     private bool _telemetryFollowTail = true;
     private bool _updatingRecentProjects;
+    private bool _updatingEngineSelection;
     private int _projectGeneration;
     private int _telemetryLineCount;
     private string _watchedTelemetryPath = string.Empty;
@@ -98,6 +101,11 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        _updatingEngineSelection = true;
+        EngineCombo.ItemsSource = EngineUiCatalog.Profiles;
+        EngineCombo.SelectedItem = EngineUiCatalog.Get(IntegrationEngine.Unity);
+        ApplyEngineProfile(EngineUiCatalog.Get(IntegrationEngine.Unity), announce: false);
+        _updatingEngineSelection = false;
         SimulatorOverlay.LayoutChanged += SimulatorOverlay_LayoutChanged;
         ActionTypeCombo.ItemsSource = Enum.GetValues<EdiGalleryType>();
         AxisCombo.ItemsSource = Enum.GetValues<EdiAxis>();
@@ -122,6 +130,7 @@ public partial class MainWindow : Window
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
+        await RestoreEnginePreferenceAsync();
         RefreshWindows();
         RegisterGlobalHotkeys();
         ResetActionEditor();
@@ -2946,6 +2955,77 @@ public partial class MainWindow : Window
         GenerateModButton.IsEnabled = !busy;
         BuildInstallButton.IsEnabled = !busy;
         WatchTelemetryButton.IsEnabled = !busy;
+        EngineCombo.IsEnabled = !busy;
+    }
+
+    private async Task RestoreEnginePreferenceAsync()
+    {
+        var engine = await _enginePreferenceStore.LoadAsync();
+        var profile = EngineUiCatalog.Get(engine);
+        _updatingEngineSelection = true;
+        try
+        {
+            EngineCombo.SelectedItem = profile;
+            ApplyEngineProfile(profile, announce: false);
+        }
+        finally
+        {
+            _updatingEngineSelection = false;
+        }
+    }
+
+    private async void EngineCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_updatingEngineSelection || EngineCombo.SelectedItem is not EngineUiProfile profile) return;
+        ApplyEngineProfile(profile, announce: true);
+        try
+        {
+            await _enginePreferenceStore.SaveAsync(profile.Engine);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            SetStatus($"The engine preference could not be saved: {exception.Message}", true);
+        }
+    }
+
+    private void ApplyEngineProfile(EngineUiProfile profile, bool announce)
+    {
+        ApplyEnginePalette(profile);
+        var unitySelected = profile.Engine == IntegrationEngine.Unity;
+        UnityIntegrationPanel.Visibility = unitySelected ? Visibility.Visible : Visibility.Collapsed;
+        EngineFoundationPanel.Visibility = unitySelected ? Visibility.Collapsed : Visibility.Visible;
+        RuntimeCorrelationText.Visibility = unitySelected ? Visibility.Visible : Visibility.Collapsed;
+        UseDetectedNameButton.Visibility = unitySelected ? Visibility.Visible : Visibility.Collapsed;
+        EngineMarkerText.Text = profile.Marker;
+        EngineWorkflowTitleText.Text = profile.WorkflowTitle;
+        EngineWorkflowSummaryText.Text = profile.WorkflowSummary;
+        EngineWorkflowStepsText.Text = profile.WorkflowSteps;
+        Title = $"GTracker | {profile.DisplayName} Integration";
+
+        if (!unitySelected && _telemetryTimer.IsEnabled) StopTelemetryWatch();
+        if (announce)
+        {
+            SetStatus(unitySelected
+                ? "Unity integration workflow selected."
+                : $"{profile.DisplayName} provider foundation selected; engine-specific installation is not implemented yet.");
+        }
+    }
+
+    private void ApplyEnginePalette(EngineUiProfile profile)
+    {
+        var resources = Application.Current.Resources;
+        foreach (var pair in profile.Palette)
+        {
+            if (ColorConverter.ConvertFromString(pair.Value) is not Color color) continue;
+            if (resources[pair.Key] is SolidColorBrush brush && !brush.IsFrozen)
+                brush.Color = color;
+            else
+                resources[pair.Key] = new SolidColorBrush(color);
+        }
+        EngineIdentityBorder.Background = new SolidColorBrush(
+            (Color)ColorConverter.ConvertFromString(profile.Palette["AccentDarkBrush"])!);
+        EngineIdentityBorder.BorderBrush = new SolidColorBrush(
+            (Color)ColorConverter.ConvertFromString(profile.Palette["AccentBrush"])!);
     }
 
     private void TopmostCheck_Changed(object sender, RoutedEventArgs e) => Topmost = TopmostCheck.IsChecked == true;
