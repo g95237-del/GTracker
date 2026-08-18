@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using GTracker.Core.Binaries;
 using GTracker.Core.Projects;
 
 namespace GTracker.Core.Unity;
@@ -55,7 +56,7 @@ public sealed class UnityGameInspector
         if (!Directory.Exists(dataDirectory)) findings.Add($"Expected Unity data directory was not found: {dataDirectory}");
 
         var runtime = il2Cpp ? UnityRuntimeKind.Il2Cpp : mono ? UnityRuntimeKind.Mono : UnityRuntimeKind.Unknown;
-        var architecture = ReadArchitecture(executablePath);
+        var architecture = PortableExecutableInspector.Inspect(executablePath).Architecture;
         var unityVersion = ReadUnityVersion(directory);
         var targetFramework = runtime == UnityRuntimeKind.Il2Cpp
             ? "net6.0"
@@ -217,17 +218,4 @@ public sealed class UnityGameInspector
         }
     }
 
-    private static string ReadArchitecture(string path)
-    {
-        try
-        {
-            using var stream = File.OpenRead(path);
-            using var reader = new PEReader(stream);
-            return reader.PEHeaders.CoffHeader.Machine.ToString();
-        }
-        catch (Exception exception) when (exception is BadImageFormatException or IOException or UnauthorizedAccessException)
-        {
-            return "Unknown";
-        }
-    }
 }

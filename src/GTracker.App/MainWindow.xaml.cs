@@ -19,6 +19,7 @@ using GTracker.App.Edi;
 using GTracker.App.Projects;
 using GTracker.App.Shell;
 using GTracker.Core.Edi;
+using GTracker.Core.Godot;
 using GTracker.Core.Projects;
 using GTracker.Core.Unity;
 using Microsoft.Win32;
@@ -41,6 +42,7 @@ public partial class MainWindow : Window
     private readonly EdiValidator _validator = new();
     private readonly EdiExporter _exporter = new();
     private readonly EdiApiClient _ediApi = new();
+    private readonly GodotGameInspector _godotGameInspector = new();
     private readonly UnityGameInspector _gameInspector = new();
     private readonly UnityModScaffolder _modScaffolder = new();
     private readonly UnityModDeployer _modDeployer = new();
@@ -92,6 +94,7 @@ public partial class MainWindow : Window
     private bool _telemetryFollowTail = true;
     private bool _updatingRecentProjects;
     private bool _updatingEngineSelection;
+    private bool _updatingGodotUi;
     private int _projectGeneration;
     private int _telemetryLineCount;
     private string _watchedTelemetryPath = string.Empty;
@@ -2230,6 +2233,54 @@ public partial class MainWindow : Window
         }
     }
 
+    private void BrowseGodotGame_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Select the Godot game executable",
+            Filter = "Windows executable (*.exe)|*.exe"
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        GodotExecutableText.Text = dialog.FileName;
+    }
+
+    private void GodotExecutableText_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_updatingGodotUi) return;
+        GodotStatusText.Text = "Not analyzed";
+        GodotStatusText.SetResourceReference(TextBlock.ForegroundProperty, "WarningTextBrush");
+    }
+
+    private async void AnalyzeGodotGame_Click(object sender, RoutedEventArgs e)
+    {
+        SetGodotAnalysisBusy(true);
+        GodotStatusText.Text = "Analyzing PCK structure...";
+        try
+        {
+            var executablePath = GodotExecutableText.Text;
+            var inspection = await Task.Run(() => _godotGameInspector.Inspect(executablePath));
+            ApplyGodotInspection(inspection);
+            MessageBox.Show(this, string.Join(Environment.NewLine, inspection.Findings), "Godot analysis",
+                MessageBoxButton.OK, inspection.IsSupported ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            SetStatus(inspection.IsSupported
+                    ? $"Godot {inspection.EngineVersion} export analysis is ready."
+                    : inspection.IsGodot
+                        ? "Godot detected, but this export is encrypted or uses an unsupported layout."
+                        : "No supported Godot project pack was found for the selected executable.",
+                !inspection.IsGodot);
+        }
+        catch (Exception exception)
+        {
+            GodotStatusText.Text = $"Analysis failed: {exception.Message}";
+            GodotStatusText.SetResourceReference(TextBlock.ForegroundProperty, "DangerTextBrush");
+            SetStatus($"Godot analysis failed: {exception.Message}", true);
+        }
+        finally
+        {
+            SetGodotAnalysisBusy(false);
+        }
+    }
+
     private void ModPresetCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         UpdatePresetDescription();
@@ -2931,6 +2982,41 @@ public partial class MainWindow : Window
             : "Unity runtime not detected";
     }
 
+    private void ApplyGodotInspection(GodotInspectionResult inspection)
+    {
+        _updatingGodotUi = true;
+        try
+        {
+            GodotExecutableText.Text = inspection.ExecutablePath;
+        }
+        finally
+        {
+            _updatingGodotUi = false;
+        }
+        var location = inspection.PackLocation switch
+        {
+            GodotPackLocation.External => "external PCK",
+            GodotPackLocation.EmbeddedSection => "embedded PCK section",
+            GodotPackLocation.EmbeddedTrailer => "embedded PCK trailer",
+            _ => "no project PCK"
+        };
+        var protection = inspection.IsEncrypted ? "encrypted" : inspection.SparseBundle ? "sparse bundle" : "unencrypted";
+        GodotStatusText.Text = inspection.IsGodot
+            ? $"Godot {inspection.EngineVersion} / {inspection.Architecture} / {location} v{inspection.PackFormatVersion} / " +
+              $"{inspection.ScriptRuntime} / {protection}" + (inspection.IsSupported ? " / analysis ready" : " / unsupported")
+            : $"Godot export not confirmed / {inspection.Architecture} / {location}";
+        GodotStatusText.SetResourceReference(TextBlock.ForegroundProperty,
+            inspection.IsSupported ? "AccentBrush" : "WarningTextBrush");
+    }
+
+    private void SetGodotAnalysisBusy(bool busy)
+    {
+        GodotBrowseButton.IsEnabled = !busy;
+        GodotExecutableText.IsEnabled = !busy;
+        AnalyzeGodotButton.IsEnabled = !busy;
+        EngineCombo.IsEnabled = !busy;
+    }
+
     private static BepInExPackage ResolveBepInExPackage(UnityRuntimeKind runtime)
     {
         var (fileName, hash) = runtime == UnityRuntimeKind.Il2Cpp
@@ -2992,8 +3078,12 @@ public partial class MainWindow : Window
     {
         ApplyEnginePalette(profile);
         var unitySelected = profile.Engine == IntegrationEngine.Unity;
+        var godotSelected = profile.Engine == IntegrationEngine.Godot;
         UnityIntegrationPanel.Visibility = unitySelected ? Visibility.Visible : Visibility.Collapsed;
         EngineFoundationPanel.Visibility = unitySelected ? Visibility.Collapsed : Visibility.Visible;
+        GodotTargetPanel.Visibility = godotSelected ? Visibility.Visible : Visibility.Collapsed;
+        ProviderFoundationNotice.Visibility = godotSelected ? Visibility.Collapsed : Visibility.Visible;
+        EngineWorkflowBadgeText.Text = godotSelected ? "TARGET ANALYSIS" : "PROVIDER FOUNDATION";
         RuntimeCorrelationText.Visibility = unitySelected ? Visibility.Visible : Visibility.Collapsed;
         UseDetectedNameButton.Visibility = unitySelected ? Visibility.Visible : Visibility.Collapsed;
         EngineMarkerText.Text = profile.Marker;
