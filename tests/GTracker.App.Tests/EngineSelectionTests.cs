@@ -12,6 +12,7 @@ public sealed class EngineSelectionTests
             EngineUiCatalog.Profiles.Select(profile => profile.Engine).Distinct().Count());
         foreach (var profile in EngineUiCatalog.Profiles)
         {
+            Assert.Equal(profile.DisplayName, profile.ToString());
             Assert.Equal(EngineUiCatalog.PaletteKeys.Order(), profile.Palette.Keys.Order());
             Assert.All(profile.Palette.Values, color => Assert.Matches("^#[0-9A-F]{6,8}$", color));
             Assert.False(string.IsNullOrWhiteSpace(profile.WorkflowSummary));

@@ -15,7 +15,10 @@ public sealed record EngineUiProfile(
     string WorkflowTitle,
     string WorkflowSummary,
     string WorkflowSteps,
-    IReadOnlyDictionary<string, string> Palette);
+    IReadOnlyDictionary<string, string> Palette)
+{
+    public override string ToString() => DisplayName;
+}
 
 public static class EngineUiCatalog
 {
