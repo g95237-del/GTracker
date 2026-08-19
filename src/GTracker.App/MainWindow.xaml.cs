@@ -66,6 +66,9 @@ public partial class MainWindow : Window
     private readonly HashSet<string> _suppressedTelemetryKinds = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _suppressedTelemetryCandidates = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _suppressedTelemetryStreams = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _suppressedGodotTelemetryKinds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _suppressedGodotTelemetryCandidates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _suppressedGodotTelemetryStreams = new(StringComparer.OrdinalIgnoreCase);
     private StudioProject _project = new();
     private string? _projectDirectory;
     private CaptureSession? _captureSession;
@@ -97,6 +100,7 @@ public partial class MainWindow : Window
     private bool _updatingUi;
     private bool _closing;
     private bool _telemetryOutputPaused;
+    private bool _godotTelemetryOutputPaused;
     private bool _telemetryFollowTail = true;
     private bool _updatingRecentProjects;
     private bool _updatingEngineSelection;
@@ -2440,6 +2444,42 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void InstallGodotEdi_Click(object sender, RoutedEventArgs e)
+    {
+        var executable = GodotExecutableText.Text.Trim();
+        if (!File.Exists(executable))
+        {
+            SetStatus("Select a Godot game executable before installing EDI.", true);
+            return;
+        }
+        var dialog = new OpenFolderDialog { Title = "Choose the fresh EDI folder containing Edi.exe" };
+        if (dialog.ShowDialog(this) != true) return;
+        var gameRoot = Path.GetDirectoryName(Path.GetFullPath(executable))!;
+        if (MessageBox.Show(this,
+                $"Copy EDI from:{Environment.NewLine}{dialog.FolderName}{Environment.NewLine}{Environment.NewLine}Into:{Environment.NewLine}{gameRoot}" +
+                $"{Environment.NewLine}{Environment.NewLine}Existing matching files will be replaced. Gallery contents are preserved.",
+                "Install EDI", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (!await _godotOperationGate.WaitAsync(0)) return;
+        SetGodotToolsBusy(true);
+        try
+        {
+            var result = await Task.Run(() => _runtimeProvisioner.InstallEdi(executable, dialog.FolderName));
+            MessageBox.Show(this, $"Installed {result.InstalledFileCount} EDI files ({result.ReplacedFileCount} replaced)." +
+                                  $"{Environment.NewLine}Gallery preserved at:{Environment.NewLine}{result.GalleryPath}",
+                "EDI installation complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            SetStatus("Installed EDI into the Godot game folder. Gallery contents were preserved.");
+        }
+        catch (Exception exception)
+        {
+            SetStatus($"EDI installation failed: {exception.Message}", true);
+        }
+        finally
+        {
+            SetGodotToolsBusy(false);
+            _godotOperationGate.Release();
+        }
+    }
+
     private void UseGodotTelemetryName_Click(object sender, RoutedEventArgs e)
     {
         if (IsCurrentSceneLocked())
@@ -2454,8 +2494,9 @@ public partial class MainWindow : Window
             return;
         }
         _correlatedUnityScene = entry.Scene;
-        _correlatedUnityAnimation = entry.Kind == "SCENE" ? string.Empty : entry.Candidate;
-        ApplyRuntimeName(entry.Candidate);
+        var preferredName = GetGodotPreferredName(entry);
+        _correlatedUnityAnimation = entry.Kind == "SCENE" ? string.Empty : preferredName;
+        ApplyRuntimeName(preferredName);
         UpdateRuntimeCorrelationText();
         SetStatus($"Scene and script filename derived from Godot {entry.Kind.ToLowerInvariant()} '{entry.Candidate}'.");
     }
@@ -2539,7 +2580,8 @@ public partial class MainWindow : Window
             PrepareNewSceneForCapture();
             SetWorkingClip(clip, resetTracks: true, startUtc, endUtc);
             _correlatedUnityScene = entry.Scene;
-            _correlatedUnityAnimation = entry.Candidate;
+            var preferredName = GetGodotPreferredName(entry);
+            _correlatedUnityAnimation = preferredName;
             _correlatedAnimationCandidates = [entry.Candidate];
             _pendingCapturedTriggerMapping = new UnityTriggerMapping
             {
@@ -2549,7 +2591,7 @@ public partial class MainWindow : Window
                 CycleDurationMilliseconds = Math.Max(1, (int)Math.Round(timing.CycleDuration.TotalMilliseconds))
             };
             LoopCheck.IsChecked = timing.IsLooping;
-            if (IsPlaceholderSceneName(ActionNameText.Text)) ApplyRuntimeName(entry.Candidate);
+            if (IsPlaceholderSceneName(ActionNameText.Text)) ApplyRuntimeName(preferredName);
             UpdateRuntimeCorrelationText();
             UpdateTriggerMappingStatus();
             SetStatus($"Captured Godot '{entry.Candidate}' as an exact {durationText}-second cycle ({clip.Frames.Count} frames).");
@@ -2570,6 +2612,23 @@ public partial class MainWindow : Window
                 mapping.ObjectPath, mapping.CycleDurationMilliseconds,
                 actions[mapping.ActionName].Type == EdiGalleryType.Reaction)).ToArray();
         return new(EdiBaseUrlText.Text.Trim(), mappings);
+    }
+
+    private static string GetGodotPreferredName(GodotTelemetryEntry entry)
+    {
+        var candidate = entry.Candidate.Trim();
+        var generic = candidate.Equals("idle", StringComparison.OrdinalIgnoreCase) ||
+                      candidate.Equals("default", StringComparison.OrdinalIgnoreCase) ||
+                      candidate.Equals("reset", StringComparison.OrdinalIgnoreCase) ||
+                      candidate.Equals("new anim", StringComparison.OrdinalIgnoreCase) ||
+                      candidate.Equals("animation", StringComparison.OrdinalIgnoreCase);
+        if (entry.Kind != "SCENE" && !generic) return candidate;
+        var scene = entry.Kind == "SCENE" ? candidate : entry.Scene.Trim();
+        var separator = Math.Max(scene.LastIndexOf('/'), scene.LastIndexOf('\\'));
+        if (separator >= 0) scene = scene[(separator + 1)..];
+        var extension = scene.LastIndexOf('.');
+        if (extension > 0) scene = scene[..extension];
+        return string.IsNullOrWhiteSpace(scene) ? candidate : scene;
     }
 
     private void ModPresetCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -3313,6 +3372,7 @@ public partial class MainWindow : Window
         GodotBrowseButton.IsEnabled = !busy;
         GodotExecutableText.IsEnabled = !busy;
         AnalyzeGodotButton.IsEnabled = !busy;
+        InstallGodotEdiButton.IsEnabled = !busy;
         EngineCombo.IsEnabled = !busy;
         if (!busy) UpdateGodotInstallState();
         else
@@ -3348,20 +3408,30 @@ public partial class MainWindow : Window
         _project.Game.TelemetryPath = path;
         _godotTelemetryCursor.Reset();
         _godotTelemetryEntries.Clear();
+        _godotTelemetryOutputPaused = false;
         RefreshGodotTelemetry();
         _godotTelemetryTimer.Start();
+        PauseGodotTelemetryButton.IsEnabled = true;
+        PauseGodotTelemetryButton.Content = "Pause output";
         UpdateGodotInstallState();
     }
 
     private void StopGodotTelemetryWatch(bool clearOutput = false)
     {
         _godotTelemetryTimer.Stop();
+        _godotTelemetryOutputPaused = false;
+        PauseGodotTelemetryButton.IsEnabled = false;
+        PauseGodotTelemetryButton.Content = "Pause output";
         if (clearOutput)
         {
             _godotTelemetryCursor.Reset();
             _godotTelemetryEntries.Clear();
+            _suppressedGodotTelemetryKinds.Clear();
+            _suppressedGodotTelemetryCandidates.Clear();
+            _suppressedGodotTelemetryStreams.Clear();
+            UpdateGodotTelemetryFilterStatus();
         }
-        GodotTelemetryStatusText.Text = $"Stopped | {_godotTelemetryEntries.Count} shown";
+        UpdateGodotTelemetryStatus();
         UpdateGodotInstallState();
     }
 
@@ -3377,14 +3447,99 @@ public partial class MainWindow : Window
             return;
         }
         if (result.WasReset) _godotTelemetryEntries.Clear();
+        if (_godotTelemetryOutputPaused)
+        {
+            UpdateGodotTelemetryStatus();
+            return;
+        }
         foreach (var entry in result.Entries)
         {
+            if (IsGodotTelemetrySuppressed(entry)) continue;
             _godotTelemetryEntries.Add(entry);
             while (_godotTelemetryEntries.Count > MaximumFollowedTelemetryEntries) _godotTelemetryEntries.RemoveAt(0);
         }
-        GodotTelemetryStatusText.Text = $"{(_godotTelemetryTimer.IsEnabled ? "Watching" : "Loaded")} | {_godotTelemetryEntries.Count} shown";
+        UpdateGodotTelemetryStatus();
         if (_godotTelemetryEntries.Count > 0) GodotTelemetryList.ScrollIntoView(_godotTelemetryEntries[^1]);
     }
+
+    private void PauseGodotTelemetry_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_godotTelemetryTimer.IsEnabled) return;
+        _godotTelemetryOutputPaused = !_godotTelemetryOutputPaused;
+        PauseGodotTelemetryButton.Content = _godotTelemetryOutputPaused ? "Resume output" : "Pause output";
+        UpdateGodotTelemetryStatus();
+    }
+
+    private void ClearGodotTelemetryOutput_Click(object sender, RoutedEventArgs e)
+    {
+        _godotTelemetryEntries.Clear();
+        UpdateGodotTelemetryStatus();
+        SetStatus("Godot telemetry output cleared. The telemetry file was left intact.");
+    }
+
+    private void SuppressGodotTelemetrySelected_Click(object sender, RoutedEventArgs e)
+    {
+        if (GodotTelemetryList.SelectedItem is not GodotTelemetryEntry entry) return;
+        _suppressedGodotTelemetryStreams.Add(TelemetryStreamKey(entry.Kind, entry.Candidate, entry.ObjectPath));
+        RemoveGodotTelemetryEntries(item => item.Kind.Equals(entry.Kind, StringComparison.OrdinalIgnoreCase) &&
+            item.Candidate.Equals(entry.Candidate, StringComparison.OrdinalIgnoreCase) &&
+            item.ObjectPath.Equals(entry.ObjectPath, StringComparison.OrdinalIgnoreCase));
+        UpdateGodotTelemetryFilterStatus();
+    }
+
+    private void SuppressGodotTelemetryCandidate_Click(object sender, RoutedEventArgs e)
+    {
+        if (GodotTelemetryList.SelectedItem is not GodotTelemetryEntry entry || string.IsNullOrWhiteSpace(entry.Candidate)) return;
+        _suppressedGodotTelemetryCandidates.Add(entry.Candidate);
+        RemoveGodotTelemetryEntries(item => item.Candidate.Equals(entry.Candidate, StringComparison.OrdinalIgnoreCase));
+        UpdateGodotTelemetryFilterStatus();
+    }
+
+    private void SuppressGodotTelemetryKind_Click(object sender, RoutedEventArgs e)
+    {
+        if (GodotTelemetryList.SelectedItem is not GodotTelemetryEntry entry) return;
+        _suppressedGodotTelemetryKinds.Add(entry.Kind);
+        RemoveGodotTelemetryEntries(item => item.Kind.Equals(entry.Kind, StringComparison.OrdinalIgnoreCase));
+        UpdateGodotTelemetryFilterStatus();
+    }
+
+    private void ClearGodotTelemetrySuppressions_Click(object sender, RoutedEventArgs e)
+    {
+        _suppressedGodotTelemetryKinds.Clear();
+        _suppressedGodotTelemetryCandidates.Clear();
+        _suppressedGodotTelemetryStreams.Clear();
+        _godotTelemetryCursor.Reset();
+        _godotTelemetryEntries.Clear();
+        UpdateGodotTelemetryFilterStatus();
+        RefreshGodotTelemetry();
+    }
+
+    private bool IsGodotTelemetrySuppressed(GodotTelemetryEntry entry) =>
+        _suppressedGodotTelemetryKinds.Contains(entry.Kind) ||
+        _suppressedGodotTelemetryCandidates.Contains(entry.Candidate) ||
+        _suppressedGodotTelemetryStreams.Contains(TelemetryStreamKey(entry.Kind, entry.Candidate, entry.ObjectPath));
+
+    private void RemoveGodotTelemetryEntries(Func<GodotTelemetryEntry, bool> predicate)
+    {
+        for (var index = _godotTelemetryEntries.Count - 1; index >= 0; index--)
+            if (predicate(_godotTelemetryEntries[index])) _godotTelemetryEntries.RemoveAt(index);
+    }
+
+    private void UpdateGodotTelemetryFilterStatus()
+    {
+        var count = _suppressedGodotTelemetryKinds.Count + _suppressedGodotTelemetryCandidates.Count + _suppressedGodotTelemetryStreams.Count;
+        GodotTelemetryFilterStatusText.Text = count == 0 ? "No hidden events" : $"{count} filter(s) active";
+        UpdateGodotTelemetryStatus();
+    }
+
+    private void UpdateGodotTelemetryStatus()
+    {
+        var state = _godotTelemetryTimer.IsEnabled ? _godotTelemetryOutputPaused ? "Paused" : "Live" : "Stopped";
+        GodotTelemetryStatusText.Text = $"{state} | {_godotTelemetryEntries.Count} shown";
+    }
+
+    private void GodotTelemetryResize_DragDelta(object sender, DragDeltaEventArgs e) =>
+        GodotTelemetryList.Height = Math.Clamp(GodotTelemetryList.ActualHeight + e.VerticalChange, 120, 520);
 
     private static string GetGodotComponentRoot(string executable) =>
         Path.Combine(Path.GetDirectoryName(Path.GetFullPath(executable))!, "GTrackerRuntime", "Godot");

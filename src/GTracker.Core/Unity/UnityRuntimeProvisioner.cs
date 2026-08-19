@@ -85,13 +85,23 @@ public sealed class UnityRuntimeProvisioner
         ArgumentNullException.ThrowIfNull(inspection);
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceDirectory);
         ValidateSupportedGame(inspection);
-        EnsureGameIsClosed(inspection.ExecutablePath);
+        return InstallEdi(inspection.ExecutablePath, sourceDirectory, cancellationToken);
+    }
+
+    public EdiInstallResult InstallEdi(string executablePath, string sourceDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceDirectory);
+        executablePath = Path.GetFullPath(executablePath);
+        if (!File.Exists(executablePath)) throw new FileNotFoundException("The selected game executable was not found.", executablePath);
+        EnsureGameIsClosed(executablePath);
 
         sourceDirectory = Path.GetFullPath(sourceDirectory);
         if (!Directory.Exists(sourceDirectory))
             throw new DirectoryNotFoundException($"The EDI source folder was not found: {sourceDirectory}");
         RejectReparsePoint(sourceDirectory);
-        var gameRoot = Path.GetDirectoryName(inspection.ExecutablePath)!;
+        var gameRoot = Path.GetDirectoryName(executablePath)!;
         RejectNestedDirectories(sourceDirectory, gameRoot);
 
         var source = EnumerateEdiSource(sourceDirectory);
@@ -108,7 +118,7 @@ public sealed class UnityRuntimeProvisioner
         var destinationDirectories = source.Directories.Concat(["Gallery"])
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
-        EnsureGameIsClosed(inspection.ExecutablePath);
+        EnsureGameIsClosed(executablePath);
         var copy = CopyFilesTransactional(sourceDirectory, gameRoot, source.Files, destinationDirectories, cancellationToken);
         return new(gameRoot, source.Files.Count, copy.ReplacedFiles, galleryPath);
     }
