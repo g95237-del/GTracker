@@ -107,6 +107,7 @@ public partial class MainWindow : Window
     private bool _updatingGodotUi = true;
     private int _projectGeneration;
     private int _telemetryLineCount;
+    private int _installedGodotMappingCount;
     private string _watchedTelemetryPath = string.Empty;
     private string _activeVariant = "default";
     private double _playbackRate = 1;
@@ -3273,7 +3274,10 @@ public partial class MainWindow : Window
     {
         var pending = _pendingCapturedTriggerMapping is null ? string.Empty : " | pending save: 1";
         TriggerMappingStatusText.Text = $"Project-wide mappings: {_project.Game.TriggerMappings.Count}{pending}";
-        GodotMappingStatusText.Text = $"Project-wide mappings: {_project.Game.TriggerMappings.Count}{pending}";
+        var applyState = _installedGodotMappingCount == _project.Game.TriggerMappings.Count
+            ? $"installed: {_installedGodotMappingCount}"
+            : $"installed: {_installedGodotMappingCount} | APPLY REQUIRED";
+        GodotMappingStatusText.Text = $"Saved mappings: {_project.Game.TriggerMappings.Count} | {applyState}{pending}";
     }
 
     private void StopTelemetryWatch(bool clearOutput = false)
@@ -3377,8 +3381,15 @@ public partial class MainWindow : Window
         var installed = false;
         if (!string.IsNullOrWhiteSpace(executable))
         {
-            try { installed = File.Exists(GetGodotManifestPath(executable)); }
-            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException) { }
+            try
+            {
+                installed = File.Exists(GetGodotManifestPath(executable));
+                _installedGodotMappingCount = installed ? _godotDiscoveryProvisioner.GetRuntimeStatus(executable).MappingCount : 0;
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException or IOException or InvalidDataException)
+            {
+                _installedGodotMappingCount = 0;
+            }
         }
         InstallGodotDiscoveryButton.IsEnabled = _godotInspection is { IsSupported: true, EngineMajorVersion: 3 } && !installed;
         RemoveGodotDiscoveryButton.IsEnabled = installed;
@@ -3386,6 +3397,7 @@ public partial class MainWindow : Window
         WatchGodotTelemetryButton.IsEnabled = installed && File.Exists(GetGodotTelemetryPath(executable));
         ApplyGodotMappingsButton.IsEnabled = installed;
         WatchGodotTelemetryButton.Content = _godotTelemetryTimer?.IsEnabled == true ? "Stop watching" : "Watch discovery";
+        UpdateTriggerMappingStatus();
     }
 
     private void StartGodotTelemetryWatch(string path)

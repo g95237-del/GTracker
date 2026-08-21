@@ -302,7 +302,8 @@
                                         <DockPanel>
                                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                                                 <Button Content="Use as scene name" Click="UseGodotTelemetryName_Click"/>
-                                                <Button x:Name="CaptureGodotCycleButton" Content="Capture cycle" Click="CaptureGodotCycle_Click"/>
+                                                <Button x:Name="CaptureGodotCycleButton" Content="Capture cycle" Click="CaptureGodotCycle_Click"
+                                                        ToolTip="Capture the selected effective-speed cycle; non-1x rows are labeled as separate speed buckets"/>
                                                 <Button Content="Map selected" Click="MapGodotTelemetry_Click"/>
                                             </StackPanel>
                                             <ComboBox x:Name="GodotTelemetryActionCombo" DisplayMemberPath="Name"
@@ -314,7 +315,8 @@
                                                 <Button Content="Clear mappings" Click="ClearTriggerMappings_Click" Padding="7,2"/>
                                             </StackPanel>
                                             <TextBlock x:Name="GodotMappingStatusText" Foreground="{DynamicResource MutedTextBrush}"
-                                                       VerticalAlignment="Center" Margin="3"/>
+                                                       VerticalAlignment="Center" Margin="3"
+                                                       ToolTip="Saved mappings must be applied while the game is closed. Variable speeds require a separately captured/mapped action for each desired speed bucket."/>
                                         </DockPanel>
                                     </StackPanel>
                                     <Border x:Name="ProviderFoundationNotice" Background="{DynamicResource InputBrush}" BorderBrush="{DynamicResource EdgeBrush}"

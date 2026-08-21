@@ -13,6 +13,8 @@ public sealed record GodotDiscoveryInstallResult(
     string ManifestPath,
     bool ReplacedExistingOverride);
 
+public sealed record GodotRuntimeStatus(int MappingCount, DateTimeOffset? UpdatedAt);
+
 public sealed class GodotDiscoveryProvisioner
 {
     private const int ManifestSchemaVersion = 1;
@@ -58,7 +60,9 @@ public sealed class GodotDiscoveryProvisioner
             InstalledOverrideSha256 = Hash(installedOverride),
             ScriptSha256 = Hash(Encoding.UTF8.GetBytes(script)),
             BackupRelativePath = overrideExisted ? Relative(gameRoot, backupPath) : string.Empty,
-            InstalledAt = DateTimeOffset.UtcNow
+            InstalledAt = DateTimeOffset.UtcNow,
+            RuntimeUpdatedAt = runtime is null ? null : DateTimeOffset.UtcNow,
+            RuntimeMappingCount = runtime?.Mappings.Count ?? 0
         };
 
         var stage = CreateTemporaryDirectory("godot-install");
@@ -120,6 +124,7 @@ public sealed class GodotDiscoveryProvisioner
         var scriptBytes = Encoding.UTF8.GetBytes(script);
         manifest.ScriptSha256 = Hash(scriptBytes);
         manifest.RuntimeUpdatedAt = DateTimeOffset.UtcNow;
+        manifest.RuntimeMappingCount = runtime.Mappings.Count;
         var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions);
         cancellationToken.ThrowIfCancellationRequested();
         EnsureGameClosed(inspection.ExecutablePath);
@@ -131,6 +136,19 @@ public sealed class GodotDiscoveryProvisioner
             throw new IOException("The Godot runtime changed while the update was being prepared.");
         RemoveTransactional([new(scriptPath, scriptBytes), new(manifestPath, manifestBytes)]);
         return new(gameRoot, overridePath, scriptPath, telemetryPath, manifestPath, manifest.OverrideExistedBeforeInstall);
+    }
+
+    public GodotRuntimeStatus GetRuntimeStatus(string executablePath)
+    {
+        executablePath = Path.GetFullPath(executablePath);
+        var gameRoot = Path.GetDirectoryName(executablePath)!;
+        var manifestPath = Path.Combine(gameRoot, RuntimeDirectoryName, ComponentDirectoryName, ManifestFileName);
+        ValidateManagedPaths(gameRoot, manifestPath);
+        if (!File.Exists(manifestPath)) return new(0, null);
+        var manifest = JsonSerializer.Deserialize<GodotDiscoveryManifest>(File.ReadAllBytes(manifestPath),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? throw new InvalidDataException("Godot discovery manifest is invalid.");
+        ValidateManifest(manifest, executablePath, gameRoot);
+        return new(manifest.RuntimeMappingCount, manifest.RuntimeUpdatedAt);
     }
 
     public void Uninstall(string executablePath)
@@ -445,6 +463,7 @@ public sealed class GodotDiscoveryProvisioner
         public string BackupRelativePath { get; set; } = string.Empty;
         public DateTimeOffset InstalledAt { get; set; }
         public DateTimeOffset? RuntimeUpdatedAt { get; set; }
+        public int RuntimeMappingCount { get; set; }
     }
 
     private sealed record RemovalChange(string Path, byte[]? Replacement);

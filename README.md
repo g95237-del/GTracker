@@ -114,6 +114,8 @@ The manifest manages files at the entire `Gallery` root. Re-exporting the same p
 
 Godot 4 exports can currently be analyzed, but installation remains disabled until a representative Godot 4 candidate is validated.
 
+Godot speed changes are reported using effective wall-clock duration and labels such as `Maid - p1 (2x)`. Because EDI has no verified playback-speed endpoint, capture and map a separate authored action for each speed bucket that needs accurate synchronization. Reusing a 1x script at 2x is intentionally not automatic because it would desynchronize device output from the game.
+
 ## Unity Setup Details
 
 1. Select the real game executable, choose **Discovery**, and click **Analyze Unity runtime**.

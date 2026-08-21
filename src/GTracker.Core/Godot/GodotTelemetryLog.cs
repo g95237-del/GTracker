@@ -15,7 +15,7 @@ public sealed record GodotTelemetryEntry(
     public string DisplayText => $"{Timestamp:HH:mm:ss}  {Kind,-18}  {SuggestedName}  {ObjectPath}";
 }
 
-public sealed record GodotPlaybackTiming(TimeSpan CycleDuration, TimeSpan Phase, bool IsLooping)
+public sealed record GodotPlaybackTiming(TimeSpan CycleDuration, TimeSpan Phase, bool IsLooping, double Speed)
 {
     public DateTimeOffset GetCycleStart(DateTimeOffset timestamp) => timestamp - Phase;
 }
@@ -42,6 +42,8 @@ public static class GodotTelemetryLog
         if (segments.Count > 1 && (ContextDependentOwners.Contains(owner) || owner.All(char.IsDigit)))
             ownerLabel = $"{DisplayWords(segments[^2])} / {ownerLabel}";
         var state = DisplayWords(candidate);
+        if (TryDetailNumber(entry.Details, "speed", out var speed) && Math.Abs(speed - 1) > 0.01)
+            state += $" ({speed.ToString("0.##", CultureInfo.InvariantCulture)}x)";
         return string.IsNullOrWhiteSpace(state) ? ownerLabel : $"{ownerLabel} - {state}";
     }
 
@@ -66,7 +68,8 @@ public static class GodotTelemetryLog
                     double.TryParse(phaseText, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedPhase) &&
                     double.IsFinite(parsedPhase) ? Math.Clamp(parsedPhase, 0, duration) : 0;
         var looping = fields.TryGetValue("loop", out var loopText) && bool.TryParse(loopText, out var parsedLoop) && parsedLoop;
-        timing = new(TimeSpan.FromSeconds(duration), TimeSpan.FromSeconds(phase), looping);
+        var speed = TryDetailNumber(item.Details, "speed", out var parsedSpeed) ? parsedSpeed : 1;
+        timing = new(TimeSpan.FromSeconds(duration), TimeSpan.FromSeconds(phase), looping, speed);
         return true;
     }
 
@@ -93,6 +96,18 @@ public static class GodotTelemetryLog
     }
 
     private static string Normalize(string value) => new(value.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+
+    private static bool TryDetailNumber(string details, string key, out double value)
+    {
+        value = 0;
+        foreach (var field in details.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pair = field.Split('=', 2);
+            if (pair.Length == 2 && pair[0].Equals(key, StringComparison.OrdinalIgnoreCase))
+                return double.TryParse(pair[1], NumberStyles.Float, CultureInfo.InvariantCulture, out value) && double.IsFinite(value);
+        }
+        return false;
+    }
 
     private static string DisplayWords(string value)
     {

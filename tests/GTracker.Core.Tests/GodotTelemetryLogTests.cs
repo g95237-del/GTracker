@@ -25,6 +25,16 @@ public sealed class GodotTelemetryLogTests
     }
 
     [Fact]
+    public void SuggestedName_IncludesNonDefaultPlaybackSpeed()
+    {
+        var entry = new GodotTelemetryEntry(DateTimeOffset.UtcNow, "ANIMATION_UPDATE", "res://Gallery.tscn",
+            "/root/Gallery/Units/Maid/AnimationPlayer", "p1",
+            "phaseSeconds=0.1;cycleDurationSeconds=0.525;speed=2;loop=false");
+
+        Assert.Equal("Maid - p1 (2x)", entry.SuggestedName);
+    }
+
+    [Fact]
     public void PlaybackTiming_ParsesAnimationUpdate()
     {
         var entry = new GodotTelemetryEntry(DateTimeOffset.UtcNow, "ANIMATION_UPDATE", "scene", "/root/player",
@@ -34,6 +44,7 @@ public sealed class GodotTelemetryLogTests
         Assert.Equal(TimeSpan.FromSeconds(1.5), timing.CycleDuration);
         Assert.Equal(TimeSpan.FromSeconds(0.25), timing.Phase);
         Assert.True(timing.IsLooping);
+        Assert.Equal(1, timing.Speed);
     }
 
     [Fact]

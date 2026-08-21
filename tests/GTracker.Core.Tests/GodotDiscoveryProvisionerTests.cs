@@ -160,6 +160,7 @@ public sealed class GodotDiscoveryProvisionerTests
             provisioner.UpdateRuntime(executable, runtime);
 
             var script = File.ReadAllText(installed.ScriptPath);
+            var status = provisioner.GetRuntimeStatus(executable);
             Assert.Contains("http://127.0.0.1:5000/Edi", script);
             Assert.Contains("resmainmenutscn", script);
             Assert.Contains("menu action", script);
@@ -172,6 +173,8 @@ public sealed class GodotDiscoveryProvisionerTests
             Assert.Contains("length / rate", script);
             Assert.Contains("func _resume_runtime", script);
             Assert.Contains("func _queue_play", script);
+            Assert.Equal(2, status.MappingCount);
+            Assert.NotNull(status.UpdatedAt);
             Assert.Equal(originalOverride, File.ReadAllBytes(installed.OverrideConfigPath));
             Assert.Equal("preserved\n", File.ReadAllText(installed.TelemetryPath).Replace("\r\n", "\n"));
 
