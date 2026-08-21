@@ -2614,7 +2614,8 @@ public partial class MainWindow : Window
         var mappings = _project.Game.TriggerMappings.Where(mapping => actions.ContainsKey(mapping.ActionName))
             .Select(mapping => new GodotRuntimeMapping(mapping.Kind, mapping.Candidate, mapping.ActionName,
                 mapping.ObjectPath, mapping.CycleDurationMilliseconds,
-                actions[mapping.ActionName].Type == EdiGalleryType.Reaction, mapping.SceneName)).ToArray();
+                actions[mapping.ActionName].Type == EdiGalleryType.Reaction, mapping.SceneName,
+                actions[mapping.ActionName].Loop)).ToArray();
         return new(EdiBaseUrlText.Text.Trim(), mappings);
     }
 

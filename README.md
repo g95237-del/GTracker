@@ -116,6 +116,8 @@ Godot 4 exports can currently be analyzed, but installation remains disabled unt
 
 Godot speed changes are reported using effective wall-clock duration and labels such as `Maid - p1 (2x)`. Because EDI has no verified playback-speed endpoint, capture and map a separate authored action for each speed bucket that needs accurate synchronization. Reusing a 1x script at 2x is intentionally not automatic because it would desynchronize device output from the game.
 
+Some games externally wrap an `AnimationPlayer` while its animation resource reports `loop=false`. GTracker detects the observed phase wrap as `ANIMATION_RESTART`. If the authored EDI action is marked **Clean loop**, EDI loops it natively until the game changes or stops that mapped animation; otherwise GTracker restarts the action at each observed wrap.
+
 ## Unity Setup Details
 
 1. Select the real game executable, choose **Discovery**, and click **Analyze Unity runtime**.

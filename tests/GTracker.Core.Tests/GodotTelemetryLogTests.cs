@@ -48,6 +48,16 @@ public sealed class GodotTelemetryLogTests
     }
 
     [Fact]
+    public void PlaybackTiming_AcceptsObservedRestart()
+    {
+        var entry = new GodotTelemetryEntry(DateTimeOffset.UtcNow, "ANIMATION_RESTART", "scene", "/root/player",
+            "p1", "phaseSeconds=0.02;cycleDurationSeconds=1.05;speed=1;loop=true");
+
+        Assert.True(GodotTelemetryLog.TryGetPlaybackTiming(entry, out var timing));
+        Assert.True(timing.IsLooping);
+    }
+
+    [Fact]
     public async Task Read_ParsesCompleteRecordsAndIgnoresMalformedTail()
     {
         var directory = CreateTemporaryDirectory();

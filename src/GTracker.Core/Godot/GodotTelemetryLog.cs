@@ -48,10 +48,10 @@ public static class GodotTelemetryLog
     }
 
     public static bool IsRuntimeCandidateEvent(string kind) =>
-        kind is "ANIMATION_START" or "ANIMATION_LOOP" or "ANIMATION_UPDATE" or "ANIMATION_STOP";
+        kind is "ANIMATION_START" or "ANIMATION_LOOP" or "ANIMATION_RESTART" or "ANIMATION_UPDATE" or "ANIMATION_STOP";
 
     public static bool IsTimedPlaybackEvent(string kind) =>
-        kind is "ANIMATION_START" or "ANIMATION_LOOP" or "ANIMATION_UPDATE";
+        kind is "ANIMATION_START" or "ANIMATION_LOOP" or "ANIMATION_RESTART" or "ANIMATION_UPDATE";
 
     public static bool TryGetPlaybackTiming(GodotTelemetryEntry item, out GodotPlaybackTiming timing)
     {

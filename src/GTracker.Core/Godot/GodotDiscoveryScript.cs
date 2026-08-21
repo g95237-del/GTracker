@@ -11,7 +11,8 @@ public sealed record GodotRuntimeMapping(
     string ObjectPath,
     int? CycleDurationMilliseconds,
     bool IsReaction,
-    string SceneName = "");
+    string SceneName = "",
+    bool ActionLoops = false);
 
 public sealed record GodotRuntimeConfiguration(string EdiBaseUrl, IReadOnlyList<GodotRuntimeMapping> Mappings);
 
@@ -37,6 +38,7 @@ internal static class GodotDiscoveryScript
                 $"\"duration\": {mapping.CycleDurationMilliseconds ?? 0}",
                 $"\"action\": {Literal(mapping.ActionName)}",
                 $"\"reaction\": {mapping.IsReaction.ToString().ToLowerInvariant()}",
+                $"\"action_loop\": {mapping.ActionLoops.ToString().ToLowerInvariant()}",
                 $"\"scene\": {Literal(Normalize(mapping.SceneName))}") + "}");
         return Template
             .Replace("__EDI_BASE_URL__", Literal(baseUrl), StringComparison.Ordinal)
@@ -173,9 +175,10 @@ internal static class GodotDiscoveryScript
                 if playing and (not was_playing or previous_animation != animation):
                     _emit("ANIMATION_START", _scene_name, path, animation, _timing_details(position, length, effective_speed, loop))
                     _activate_animation(id, animation, path, length, position, effective_speed)
-                elif playing and loop and previous_animation == animation and _wrapped(previous_position, position, length, effective_speed):
-                    _emit("ANIMATION_LOOP", _scene_name, path, animation, _timing_details(position, length, effective_speed, loop))
-                    _activate_animation(id, animation, path, length, position, effective_speed)
+                elif playing and previous_animation == animation and _wrapped(previous_position, position, length, effective_speed):
+                    var wrap_kind = "ANIMATION_LOOP" if loop else "ANIMATION_RESTART"
+                    _emit(wrap_kind, _scene_name, path, animation, _timing_details(position, length, effective_speed, true))
+                    _activate_animation(id, animation, path, length, position, effective_speed, true)
                 elif not playing and was_playing:
                     _emit("ANIMATION_STOP", _scene_name, path, previous_animation, _timing_details(previous_position, previous.get("length", 0.0), previous.get("speed", 0.0), previous.get("loop", false)))
                     _deactivate_animation(id)
@@ -192,7 +195,7 @@ internal static class GodotDiscoveryScript
                 _deactivate_animation(id)
 
 
-        func _activate_animation(id, animation, path, length, position, speed):
+        func _activate_animation(id, animation, path, length, position, speed, wrapped = false):
             var rate = max(0.000001, abs(speed))
             var duration = int(round(length * 1000.0 / rate))
             var phase = position / rate if speed >= 0.0 else (length - position) / rate
@@ -203,11 +206,14 @@ internal static class GodotDiscoveryScript
                     _active_owner = 0
                     _resume_runtime()
                 return
+            var already_active = _active_owner == id and _runtime_states.has(id) and _runtime_states[id].action == mapping.action
             _runtime_sequence += 1
-            _runtime_states[id] = {"action": mapping.action, "reaction": mapping.reaction, "seek": int(round(max(0.0, phase) * 1000.0)), "sequence": _runtime_sequence}
+            _runtime_states[id] = {"action": mapping.action, "reaction": mapping.reaction, "action_loop": mapping.action_loop, "seek": int(round(max(0.0, phase) * 1000.0)), "sequence": _runtime_sequence}
             if _active_owner != 0 and _runtime_states.has(_active_owner) and _runtime_states[_active_owner].reaction and not mapping.reaction:
                 return
             _active_owner = id
+            if wrapped and already_active and mapping.action_loop:
+                return
             _play(mapping.action, _runtime_states[id].seek, "reaction" if mapping.reaction else "animation")
 
 
@@ -225,7 +231,7 @@ internal static class GodotDiscoveryScript
             if not _runtime_states.has(id):
                 _runtime_sequence += 1
             var sequence = _runtime_states[id].sequence if _runtime_states.has(id) else _runtime_sequence
-            _runtime_states[id] = {"action": mapping.action, "reaction": mapping.reaction, "seek": int(round(max(0.0, phase) * 1000.0)), "sequence": sequence}
+            _runtime_states[id] = {"action": mapping.action, "reaction": mapping.reaction, "action_loop": mapping.action_loop, "seek": int(round(max(0.0, phase) * 1000.0)), "sequence": sequence}
 
 
         func _deactivate_animation(id):
