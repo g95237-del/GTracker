@@ -118,6 +118,8 @@ Godot speed changes are reported using effective wall-clock duration and labels 
 
 Some games externally wrap an `AnimationPlayer` while its animation resource reports `loop=false`. GTracker detects the observed phase wrap as `ANIMATION_RESTART`. If the authored EDI action is marked **Clean loop**, EDI loops it natively until the game changes or stops that mapped animation; otherwise GTracker restarts the action at each observed wrap.
 
+Mappings captured from a `Gallery/Units/<Character>/AnimationPlayer` hierarchy can follow that character into gameplay when the instantiated scene resource or numbered hierarchy owner preserves the same identity. For these mappings, gameplay names such as `p1pre` and `p1prefin` match their Gallery `p1` and `p1fin` counterparts while duration checks remain active. GTracker does not fall back to animation name and duration alone when character identity is unavailable, avoiding cross-character triggers in generated hierarchies.
+
 ## Unity Setup Details
 
 1. Select the real game executable, choose **Discovery**, and click **Analyze Unity runtime**.

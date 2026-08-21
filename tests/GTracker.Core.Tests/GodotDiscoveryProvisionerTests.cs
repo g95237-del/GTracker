@@ -154,7 +154,9 @@ public sealed class GodotDiscoveryProvisionerTests
             [
                 new(UnityTriggerKind.Scene, "res://Main Menu.tscn", "menu action", "", null, false),
                 new(UnityTriggerKind.AnimationClip, "Idle", "idle/action", "/root/Main/Player", 1200, false,
-                    "res://scenes/Battle.tscn", true)
+                    "res://scenes/Battle.tscn", true),
+                new(UnityTriggerKind.AnimationClip, "p1fin", "Maid - p1fin", "/root/Gallery/Units/Maid/AnimationPlayer",
+                    1050, false, "res://Gallery.tscn")
             ]);
 
             provisioner.UpdateRuntime(executable, runtime);
@@ -166,7 +168,7 @@ public sealed class GodotDiscoveryProvisionerTests
             Assert.Contains("menu action", script);
             Assert.Contains("root/Main/Player", script);
             Assert.Contains("resscenesbattletscn", script);
-            Assert.Contains("mapping.scene != _normalize(_scene_name)", script);
+            Assert.Contains("mapping.scene == _normalize(_scene_name)", script);
             Assert.Contains("\"action_loop\": true", script);
             Assert.Contains("ANIMATION_RESTART", script);
             Assert.Contains("wrapped and already_active and mapping.action_loop", script);
@@ -176,7 +178,14 @@ public sealed class GodotDiscoveryProvisionerTests
             Assert.Contains("length / rate", script);
             Assert.Contains("func _resume_runtime", script);
             Assert.Contains("func _queue_play", script);
-            Assert.Equal(2, status.MappingCount);
+            Assert.Contains("\"portable\": true", script);
+            Assert.Contains("\"portable\": false", script);
+            Assert.Contains("\"owner\": \"maid\"", script);
+            Assert.Contains("func _portable_animation_name", script);
+            Assert.Contains("func _owner_resource", script);
+            Assert.Contains("ownerResource=", script);
+            Assert.Contains("_owner_matches(mapping.owner, owner)", script);
+            Assert.Equal(3, status.MappingCount);
             Assert.NotNull(status.UpdatedAt);
             Assert.Equal(originalOverride, File.ReadAllBytes(installed.OverrideConfigPath));
             Assert.Equal("preserved\n", File.ReadAllText(installed.TelemetryPath).Replace("\r\n", "\n"));

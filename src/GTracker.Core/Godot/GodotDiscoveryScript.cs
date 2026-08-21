@@ -32,14 +32,20 @@ internal static class GodotDiscoveryScript
         var animations = mappings.Where(mapping => mapping.Kind == UnityTriggerKind.AnimationClip &&
                                                    !string.IsNullOrWhiteSpace(mapping.Candidate) &&
                                                    !string.IsNullOrWhiteSpace(mapping.ActionName))
-            .Select(mapping => "{" + string.Join(", ",
-                $"\"candidate\": {Literal(Normalize(mapping.Candidate))}",
-                $"\"path\": {Literal(mapping.ObjectPath.Trim('/'))}",
-                $"\"duration\": {mapping.CycleDurationMilliseconds ?? 0}",
-                $"\"action\": {Literal(mapping.ActionName)}",
-                $"\"reaction\": {mapping.IsReaction.ToString().ToLowerInvariant()}",
-                $"\"action_loop\": {mapping.ActionLoops.ToString().ToLowerInvariant()}",
-                $"\"scene\": {Literal(Normalize(mapping.SceneName))}") + "}");
+            .Select(mapping =>
+            {
+                var portableOwner = GetPortableGalleryOwner(mapping);
+                return "{" + string.Join(", ",
+                    $"\"candidate\": {Literal(Normalize(mapping.Candidate))}",
+                    $"\"path\": {Literal(mapping.ObjectPath.Trim('/'))}",
+                    $"\"duration\": {mapping.CycleDurationMilliseconds ?? 0}",
+                    $"\"action\": {Literal(mapping.ActionName)}",
+                    $"\"reaction\": {mapping.IsReaction.ToString().ToLowerInvariant()}",
+                    $"\"action_loop\": {mapping.ActionLoops.ToString().ToLowerInvariant()}",
+                    $"\"scene\": {Literal(Normalize(mapping.SceneName))}",
+                    $"\"portable\": {(portableOwner.Length > 0).ToString().ToLowerInvariant()}",
+                    $"\"owner\": {Literal(Normalize(portableOwner))}") + "}";
+            });
         return Template
             .Replace("__EDI_BASE_URL__", Literal(baseUrl), StringComparison.Ordinal)
             .Replace("__SCENE_MAPPINGS__", "{" + string.Join(", ", scenes) + "}", StringComparison.Ordinal)
@@ -55,6 +61,20 @@ internal static class GodotDiscoveryScript
 
     private static string Normalize(string value) => new(value.ToLowerInvariant()
         .Where(character => character is >= 'a' and <= 'z' or >= '0' and <= '9').ToArray());
+
+    private static string GetPortableGalleryOwner(GodotRuntimeMapping mapping)
+    {
+        var sceneFile = mapping.SceneName.Replace('\\', '/').Split('/').LastOrDefault() ?? string.Empty;
+        if (!Path.GetFileNameWithoutExtension(sceneFile).Equals("Gallery", StringComparison.OrdinalIgnoreCase))
+            return string.Empty;
+
+        var segments = mapping.ObjectPath.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
+        for (var index = 0; index + 2 < segments.Length; index++)
+            if (segments[index].Equals("Units", StringComparison.OrdinalIgnoreCase) &&
+                segments[^1].Equals("AnimationPlayer", StringComparison.OrdinalIgnoreCase))
+                return segments[index + 1];
+        return string.Empty;
+    }
 
     private static string Literal(string value)
     {
@@ -77,6 +97,7 @@ internal static class GodotDiscoveryScript
         var _scene_id = 0
         var _scene_name = ""
         var _players = {}
+        var _owners = {}
         var _states = {}
         var _telemetry_path = ""
         var _scene_mappings = __SCENE_MAPPINGS__
@@ -130,7 +151,10 @@ internal static class GodotDiscoveryScript
 
         func _index_node(node):
             if node is AnimationPlayer:
-                _players[node.get_instance_id()] = weakref(node)
+                var id = node.get_instance_id()
+                var resource = _owner_resource(node)
+                _players[id] = weakref(node)
+                _owners[id] = {"key": _owner_key(node, resource), "resource": resource}
             for child in node.get_children():
                 _index_node(child)
 
@@ -172,18 +196,19 @@ internal static class GodotDiscoveryScript
                 var previous_animation = previous.get("animation", "")
                 var previous_position = previous.get("position", 0.0)
                 var effective_speed = player.get_playing_speed()
+                var owner_details = _owner_details(id)
                 if playing and (not was_playing or previous_animation != animation):
-                    _emit("ANIMATION_START", _scene_name, path, animation, _timing_details(position, length, effective_speed, loop))
+                    _emit("ANIMATION_START", _scene_name, path, animation, _timing_details(position, length, effective_speed, loop) + owner_details)
                     _activate_animation(id, animation, path, length, position, effective_speed)
                 elif playing and previous_animation == animation and _wrapped(previous_position, position, length, effective_speed):
                     var wrap_kind = "ANIMATION_LOOP" if loop else "ANIMATION_RESTART"
-                    _emit(wrap_kind, _scene_name, path, animation, _timing_details(position, length, effective_speed, true))
+                    _emit(wrap_kind, _scene_name, path, animation, _timing_details(position, length, effective_speed, true) + owner_details)
                     _activate_animation(id, animation, path, length, position, effective_speed, true)
                 elif not playing and was_playing:
-                    _emit("ANIMATION_STOP", _scene_name, path, previous_animation, _timing_details(previous_position, previous.get("length", 0.0), previous.get("speed", 0.0), previous.get("loop", false)))
+                    _emit("ANIMATION_STOP", _scene_name, path, previous_animation, _timing_details(previous_position, previous.get("length", 0.0), previous.get("speed", 0.0), previous.get("loop", false)) + owner_details)
                     _deactivate_animation(id)
                 elif playing and emit_update:
-                    _emit("ANIMATION_UPDATE", _scene_name, path, animation, _timing_details(position, length, effective_speed, loop))
+                    _emit("ANIMATION_UPDATE", _scene_name, path, animation, _timing_details(position, length, effective_speed, loop) + owner_details)
                     if _active_owner == 0:
                         _activate_animation(id, animation, path, length, position, effective_speed)
                     else:
@@ -191,6 +216,7 @@ internal static class GodotDiscoveryScript
                 _states[id] = {"playing": playing, "animation": animation, "position": position, "length": length, "speed": effective_speed, "loop": loop}
             for id in stale:
                 _players.erase(id)
+                _owners.erase(id)
                 _states.erase(id)
                 _deactivate_animation(id)
 
@@ -199,7 +225,7 @@ internal static class GodotDiscoveryScript
             var rate = max(0.000001, abs(speed))
             var duration = int(round(length * 1000.0 / rate))
             var phase = position / rate if speed >= 0.0 else (length - position) / rate
-            var mapping = _match_animation(animation, path, duration)
+            var mapping = _match_animation(animation, path, duration, _owners.get(id, {}).get("key", ""))
             if mapping.empty():
                 _runtime_states.erase(id)
                 if _active_owner == id:
@@ -221,7 +247,7 @@ internal static class GodotDiscoveryScript
             var rate = max(0.000001, abs(speed))
             var duration = int(round(length * 1000.0 / rate))
             var phase = position / rate if speed >= 0.0 else (length - position) / rate
-            var mapping = _match_animation(animation, path, duration)
+            var mapping = _match_animation(animation, path, duration, _owners.get(id, {}).get("key", ""))
             if mapping.empty():
                 _runtime_states.erase(id)
                 if _active_owner == id:
@@ -271,29 +297,58 @@ internal static class GodotDiscoveryScript
                 _play("filler", 0, "filler")
 
 
-        func _match_animation(candidate, object_path, duration):
+        func _match_animation(candidate, object_path, duration, owner):
             var normalized = _normalize(candidate)
+            var portable_candidate = _portable_animation_name(normalized)
             var path = str(object_path).trim_prefix("/").trim_suffix("/")
             var best = {}
             var best_score = -1
             var best_distance = 2147483647
             for mapping in _animation_mappings:
-                if mapping.candidate != normalized:
-                    continue
-                if mapping.scene != "" and mapping.scene != _normalize(_scene_name):
-                    continue
                 var mapped_path = mapping.path
-                if mapped_path != "" and mapped_path != path and not path.ends_with("/" + mapped_path):
+                var scene_matches = mapping.scene == "" or mapping.scene == _normalize(_scene_name)
+                var path_matches = mapped_path == "" or mapped_path == path or path.ends_with("/" + mapped_path)
+                var exact = mapping.candidate == normalized and scene_matches and path_matches
+                var portable = mapping.portable and _portable_animation_name(mapping.candidate) == portable_candidate and _owner_matches(mapping.owner, owner)
+                if not exact and not portable:
                     continue
                 if mapping.duration > 0 and abs(mapping.duration - duration) > max(25, int(mapping.duration / 10)):
                     continue
-                var score = (4 if mapping.scene != "" else 0) + (2 if mapped_path != "" else 0) + (1 if mapping.duration > 0 else 0)
+                var score = (16 if exact else 4) + (4 if exact and mapping.scene != "" else 0) + (2 if exact and mapped_path != "" else 0) + (1 if mapping.duration > 0 else 0)
                 var distance = abs(mapping.duration - duration) if mapping.duration > 0 else 2147483647
                 if score > best_score or (score == best_score and distance < best_distance):
                     best = mapping
                     best_score = score
                     best_distance = distance
             return best
+
+
+        func _portable_animation_name(value):
+            var normalized = _normalize(value)
+            if not normalized.begins_with("p"):
+                return normalized
+            var index = 1
+            while index < normalized.length() and normalized[index] in "0123456789":
+                index += 1
+            if index > 1 and normalized.substr(index, 3) == "pre":
+                return normalized.substr(0, index) + normalized.substr(index + 3)
+            return normalized
+
+
+        func _owner_matches(expected, actual):
+            if expected == "" or actual == "":
+                return false
+            if expected == actual:
+                return true
+            if not actual.begins_with(expected):
+                return false
+            var suffix = actual.substr(expected.length())
+            if suffix == "":
+                return true
+            for character in suffix:
+                if not character in "0123456789":
+                    return false
+            return true
 
 
         func _play(action, seek, source):
@@ -343,6 +398,27 @@ internal static class GodotDiscoveryScript
             if scene.filename != "":
                 return scene.filename
             return str(scene.name)
+
+
+        func _owner_resource(player):
+            var current = player.get_parent()
+            while current != null:
+                if current.filename != "":
+                    return str(current.filename)
+                current = current.get_parent()
+            return ""
+
+
+        func _owner_key(player, resource):
+            if resource != "":
+                return _normalize(str(resource).get_file().get_basename())
+            var parent = player.get_parent()
+            return _normalize(parent.name) if parent != null else ""
+
+
+        func _owner_details(id):
+            var owner = _owners.get(id, {})
+            return ";ownerKey=" + str(owner.get("key", "")) + ";ownerResource=" + str(owner.get("resource", ""))
 
 
         func _timing_details(position, length, speed, loop):
