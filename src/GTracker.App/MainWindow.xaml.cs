@@ -182,7 +182,11 @@ public partial class MainWindow : Window
         try
         {
             var projectDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
-            var project = new StudioProject { Name = name };
+            var project = new StudioProject
+            {
+                Name = name,
+                SpeedMultipliers = EdiSpeedVariants.RecommendedMultipliers.ToList()
+            };
             Directory.CreateDirectory(Path.Combine(projectDirectory, "clips"));
             await _projectStore.SaveAsync(projectDirectory, project);
             await ActivateProjectAsync(project, projectDirectory);
@@ -358,6 +362,7 @@ public partial class MainWindow : Window
         if (_projectDirectory is null) return false;
         SyncSimulatorLayout();
         _project.Name = string.IsNullOrWhiteSpace(ProjectNameText.Text) ? _project.Name : ProjectNameText.Text.Trim();
+        SyncSpeedMultipliers();
         _project.Game.ExecutablePath = EngineCombo.SelectedItem is EngineUiProfile { Engine: IntegrationEngine.Godot }
             ? GodotExecutableText.Text.Trim()
             : GameExecutableText.Text.Trim();
@@ -415,6 +420,7 @@ public partial class MainWindow : Window
         _inspection = null;
         _reviewMode = false;
         ProjectNameText.Text = _project.Name;
+        SpeedMultipliersText.Text = string.Join(", ", _project.SpeedMultipliers.Select(EdiSpeedVariants.FormatMultiplier));
         ProjectPathText.Text = _projectDirectory ?? "No project folder selected";
         GameExecutableText.Text = _project.Game.ExecutablePath;
         _updatingGodotUi = true;
@@ -2073,6 +2079,15 @@ public partial class MainWindow : Window
 
     private void Validate_Click(object sender, RoutedEventArgs e)
     {
+        try
+        {
+            SyncSpeedMultipliers();
+        }
+        catch (FormatException exception)
+        {
+            SetStatus(exception.Message, true);
+            return;
+        }
         var issues = _validator.Validate(_project);
         if (issues.Count == 0)
         {
@@ -2100,6 +2115,15 @@ public partial class MainWindow : Window
         if (_project.Actions.Count == 0)
         {
             SetStatus("Save at least one scene before exporting.", true);
+            return;
+        }
+        try
+        {
+            SyncSpeedMultipliers();
+        }
+        catch (FormatException exception)
+        {
+            SetStatus(exception.Message, true);
             return;
         }
         var dialog = new OpenFolderDialog { Title = "Choose the EDI Gallery root folder that contains Definitions.csv and variant folders" };
@@ -2327,6 +2351,7 @@ public partial class MainWindow : Window
         SetGodotToolsBusy(true);
         try
         {
+            SyncSpeedMultipliers();
             var configuration = CreateGodotRuntimeConfiguration();
             var result = await Task.Run(() => _godotDiscoveryProvisioner.Install(inspection.ExecutablePath, configuration));
             if (projectGeneration != Volatile.Read(ref _projectGeneration)) return;
@@ -2432,9 +2457,10 @@ public partial class MainWindow : Window
         SetGodotToolsBusy(true);
         try
         {
+            SyncSpeedMultipliers();
             var configuration = CreateGodotRuntimeConfiguration();
             await Task.Run(() => _godotDiscoveryProvisioner.UpdateRuntime(executable, configuration));
-            SetStatus($"Applied {_project.Game.TriggerMappings.Count} Godot runtime mapping(s). Launch with EDI running to test playback.");
+            SetStatus($"Applied {configuration.Mappings.Count} compiled Godot mapping(s) from {_project.Game.TriggerMappings.Count} saved mapping(s). Launch with EDI running to test playback.");
         }
         catch (Exception exception)
         {
@@ -2611,14 +2637,21 @@ public partial class MainWindow : Window
     }
 
     private GodotRuntimeConfiguration CreateGodotRuntimeConfiguration()
+        => GodotRuntimeConfigurationCompiler.Create(_project, EdiBaseUrlText.Text);
+
+    private void SyncSpeedMultipliers()
     {
-        var actions = _project.GetLogicalActions().ToDictionary(action => action.Name, StringComparer.OrdinalIgnoreCase);
-        var mappings = _project.Game.TriggerMappings.Where(mapping => actions.ContainsKey(mapping.ActionName))
-            .Select(mapping => new GodotRuntimeMapping(mapping.Kind, mapping.Candidate, mapping.ActionName,
-                mapping.ObjectPath, mapping.CycleDurationMilliseconds,
-                actions[mapping.ActionName].Type == EdiGalleryType.Reaction, mapping.SceneName,
-                actions[mapping.ActionName].Loop)).ToArray();
-        return new(EdiBaseUrlText.Text.Trim(), mappings);
+        var values = SpeedMultipliersText.Text
+            .Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(value => value.EndsWith('x') ? value[..^1] : value)
+            .Select(value => double.TryParse(value, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var multiplier) &&
+                double.IsFinite(multiplier) && multiplier > 0
+                    ? multiplier
+                    : throw new FormatException($"Speed multiplier '{value}' must be a positive number such as 0.75, 1.5, or 2."))
+            .ToArray();
+        _project.SpeedMultipliers = EdiSpeedVariants.NormalizeMultipliers(values).ToList();
+        SpeedMultipliersText.Text = string.Join(", ", _project.SpeedMultipliers.Select(EdiSpeedVariants.FormatMultiplier));
     }
 
     private void ModPresetCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -3277,10 +3310,19 @@ public partial class MainWindow : Window
     {
         var pending = _pendingCapturedTriggerMapping is null ? string.Empty : " | pending save: 1";
         TriggerMappingStatusText.Text = $"Project-wide mappings: {_project.Game.TriggerMappings.Count}{pending}";
-        var applyState = _installedGodotMappingCount == _project.Game.TriggerMappings.Count
+        int compiledCount;
+        try
+        {
+            compiledCount = CreateGodotRuntimeConfiguration().Mappings.Count;
+        }
+        catch (Exception)
+        {
+            compiledCount = _project.Game.TriggerMappings.Count;
+        }
+        var applyState = _installedGodotMappingCount == compiledCount
             ? $"installed: {_installedGodotMappingCount}"
             : $"installed: {_installedGodotMappingCount} | APPLY REQUIRED";
-        GodotMappingStatusText.Text = $"Saved mappings: {_project.Game.TriggerMappings.Count} | {applyState}{pending}";
+        GodotMappingStatusText.Text = $"Saved mappings: {_project.Game.TriggerMappings.Count} | compiled: {compiledCount} | {applyState}{pending}";
     }
 
     private void StopTelemetryWatch(bool clearOutput = false)

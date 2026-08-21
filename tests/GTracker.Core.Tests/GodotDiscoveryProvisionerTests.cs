@@ -7,6 +7,35 @@ namespace GTracker.Core.Tests;
 public sealed class GodotDiscoveryProvisionerTests
 {
     [Fact]
+    public void RuntimeCompiler_ExpandsMappingsIntoProjectSpeedVariants()
+    {
+        var action = new AuthoredAction
+        {
+            Name = "Boss1 - p1fin",
+            FileName = "boss1-p1fin",
+            DurationMilliseconds = 2250
+        };
+        var project = new StudioProject
+        {
+            SpeedMultipliers = [0.75, 1, 2],
+            Actions = [action]
+        };
+        project.Game.SetTriggerMapping(UnityTriggerKind.AnimationClip, "p1fin", action.Name,
+            "/root/Gallery/Units/Boss1/AnimationPlayer", 2250, "res://Gallery.tscn");
+
+        var runtime = GodotRuntimeConfigurationCompiler.Create(project, "http://127.0.0.1:5000/Edi");
+
+        Assert.Equal(3, runtime.Mappings.Count);
+        var slow = Assert.Single(runtime.Mappings, mapping => mapping.ActionName.EndsWith("[0.75x]"));
+        Assert.Equal(3000, slow.CycleDurationMilliseconds);
+        Assert.Equal(3000, slow.ActionDurationMilliseconds);
+        Assert.True(slow.AllowNearestDuration);
+        var fast = Assert.Single(runtime.Mappings, mapping => mapping.ActionName.EndsWith("[2x]"));
+        Assert.Equal(1125, fast.CycleDurationMilliseconds);
+        Assert.Equal(1125, fast.ActionDurationMilliseconds);
+    }
+
+    [Fact]
     public void InstallAndUninstall_FreshTargetIsReversibleAndPreservesTelemetry()
     {
         var directory = CreateGodot3Target();
@@ -185,6 +214,10 @@ public sealed class GodotDiscoveryProvisionerTests
             Assert.Contains("func _owner_resource", script);
             Assert.Contains("ownerResource=", script);
             Assert.Contains("_owner_matches(mapping.owner, owner)", script);
+            Assert.Contains("\"action_duration\":", script);
+            Assert.Contains("\"nearest_duration\":", script);
+            Assert.Contains("func _scaled_seek", script);
+            Assert.Contains("animation-speed-change", script);
             Assert.Equal(3, status.MappingCount);
             Assert.NotNull(status.UpdatedAt);
             Assert.Equal(originalOverride, File.ReadAllBytes(installed.OverrideConfigPath));

@@ -113,6 +113,37 @@ public sealed class EdiValidatorTests
                                          issue.Message.Contains("alternate"));
     }
 
+    [Fact]
+    public void Validate_RejectsSpeedMultiplierDurationOverflow()
+    {
+        var project = new StudioProject
+        {
+            SpeedMultipliers = [0.0000001, 1],
+            Actions = [CreateAction("scene", "scene")]
+        };
+
+        var issues = new EdiValidator().Validate(project);
+
+        Assert.Contains(issues, issue => issue.Severity == ValidationSeverity.Error &&
+                                         issue.Message.Contains("larger than EDI supports"));
+    }
+
+    [Fact]
+    public void Validate_KeepsCloseMultipliersUniquelyNamed()
+    {
+        var project = new StudioProject
+        {
+            SpeedMultipliers = [0.7496, 0.7504, 1],
+            Actions = [CreateAction("scene", "scene")]
+        };
+
+        var variants = EdiSpeedVariants.Create(project.Actions[0], project.SpeedMultipliers);
+        var issues = new EdiValidator().Validate(project);
+
+        Assert.Equal(3, variants.Select(variant => variant.ActionName).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.DoesNotContain(issues, issue => issue.Severity == ValidationSeverity.Error);
+    }
+
     private static AuthoredAction CreateAction(string name, string fileName) => new()
     {
         Name = name,

@@ -347,7 +347,7 @@
 
         <Border Grid.Row="4" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource EdgeBrush}" BorderThickness="1" CornerRadius="6" Padding="7" Margin="0,8,0,0">
             <Grid>
-                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="250"/></Grid.ColumnDefinitions>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="190"/><ColumnDefinition Width="250"/></Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Orientation="Horizontal">
                     <Button Content="Validate" Click="Validate_Click"/>
                     <Button Content="Export EDI gallery" Click="Export_Click" Style="{StaticResource PrimaryButtonStyle}"/>
@@ -357,7 +357,10 @@
                     <Button Content="Check EDI" Click="CheckEdi_Click"/>
                     <Button Content="Test selected" Click="TestPlay_Click"/>
                 </StackPanel>
-                <TextBox Grid.Column="3" x:Name="EdiBaseUrlText" Text="http://127.0.0.1:5000/Edi" ToolTip="EDI API base URL"/>
+                <TextBlock Grid.Column="3" Text="SPEEDS" Style="{StaticResource SectionHeaderStyle}" VerticalAlignment="Center" Margin="8,0,5,0"/>
+                <TextBox Grid.Column="4" x:Name="SpeedMultipliersText" Text="0.75, 1, 1.5, 2, 2.5, 3"
+                         ToolTip="Project-wide linear speed variants. Generated EDI scripts scale timestamps automatically; 0.75 means a 4/3-duration script."/>
+                <TextBox Grid.Column="5" x:Name="EdiBaseUrlText" Text="http://127.0.0.1:5000/Edi" ToolTip="EDI API base URL"/>
             </Grid>
         </Border>
     </Grid>

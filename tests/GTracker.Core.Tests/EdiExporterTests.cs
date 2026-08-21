@@ -244,6 +244,54 @@ public sealed class EdiExporterTests
     }
 
     [Fact]
+    public async Task Export_GeneratesLinearlyScaledProjectSpeedVariants()
+    {
+        var directory = CreateTemporaryDirectory();
+        try
+        {
+            var action = new AuthoredAction
+            {
+                Name = "Boss1 - p1fin",
+                FileName = "boss1-p1fin",
+                DurationMilliseconds = 2250,
+                Tracks = [new ActionTrack { Points = [new(0, 0), new(1000, 75), new(2250, 0)] }]
+            };
+            var project = new StudioProject
+            {
+                SpeedMultipliers = [0.75, 1, 2],
+                Actions = [action]
+            };
+
+            var result = await new EdiExporter().ExportAsync(project, directory);
+
+            Assert.Equal(4, result.DefinitionCount);
+            Assert.Equal(4, result.ScriptCount);
+            var csv = await File.ReadAllTextAsync(Path.Combine(directory, "Definitions.csv"));
+            Assert.Contains("Boss1 - p1fin [0.75x],boss1-p1fin--speed-0_75x,0,3000", csv);
+            Assert.Contains("Boss1 - p1fin,boss1-p1fin,0,2250", csv);
+            Assert.Contains("Boss1 - p1fin [2x],boss1-p1fin--speed-2x,0,1125", csv);
+
+            await using var stream = File.OpenRead(Path.Combine(directory, "boss1-p1fin--speed-0_75x.funscript"));
+            using var json = await JsonDocument.ParseAsync(stream);
+            var points = json.RootElement.GetProperty("actions").EnumerateArray().ToArray();
+            Assert.Equal([0, 1333, 3000], points.Select(point => point.GetProperty("at").GetInt32()).ToArray());
+            Assert.Equal([0, 75, 0], points.Select(point => point.GetProperty("pos").GetInt32()).ToArray());
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void ScalePoints_PreservesShapeAcrossLinearDurationChange()
+    {
+        var points = EdiSpeedVariants.ScalePoints([new(0, 10), new(750, 80), new(2250, 10)], 2250, 3000);
+
+        Assert.Equal([new FunscriptPoint(0, 10), new FunscriptPoint(1000, 80), new FunscriptPoint(3000, 10)], points);
+    }
+
+    [Fact]
     public async Task Export_ReexportRemovesPreviouslyManagedAxesAndBundle()
     {
         var directory = CreateTemporaryDirectory();

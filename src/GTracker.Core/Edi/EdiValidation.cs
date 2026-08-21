@@ -37,6 +37,15 @@ public sealed class EdiValidator
             issues.Add(Error("Project", "Project name is required."));
         }
 
+        if (project.SpeedMultipliers is null || project.SpeedMultipliers.Any(value => !double.IsFinite(value) || value <= 0))
+        {
+            issues.Add(Error("Speed variants", "Speed multipliers must be finite values greater than zero."));
+        }
+        else if (project.SpeedMultipliers.GroupBy(value => Math.Round(value, 6)).Any(group => group.Count() > 1))
+        {
+            issues.Add(Error("Speed variants", "Speed multipliers must be unique."));
+        }
+
         foreach (var variant in project.Variants)
         {
             if (!IsSafeVariant(variant))
@@ -193,6 +202,36 @@ public sealed class EdiValidator
             {
                 issues.Add(Warning(pair.Value.Name,
                     $"Definition has no rendition in variant(s): {string.Join(", ", missing)}."));
+            }
+        }
+
+        var projectedNames = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+        var projectedFiles = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in definitions)
+        {
+            IReadOnlyList<EdiSpeedVariant> speedVariants;
+            try
+            {
+                speedVariants = EdiSpeedVariants.Create(pair.Value, project.SpeedMultipliers);
+            }
+            catch (Exception exception) when (exception is InvalidDataException or ArgumentOutOfRangeException)
+            {
+                issues.Add(Error(pair.Value.Name, exception.Message));
+                continue;
+            }
+            foreach (var speedVariant in speedVariants)
+            {
+                if (projectedNames.ContainsKey(speedVariant.ActionName))
+                    issues.Add(Error(pair.Value.Name, $"Generated speed action name '{speedVariant.ActionName}' collides with another definition."));
+                else
+                    projectedNames[speedVariant.ActionName] = pair.Key;
+
+                if (!IsSafeEdiStem(speedVariant.FileName))
+                    issues.Add(Error(pair.Value.Name, $"Generated speed filename '{speedVariant.FileName}' is unsafe."));
+                else if (projectedFiles.ContainsKey(speedVariant.FileName))
+                    issues.Add(Error(pair.Value.Name, $"Generated speed filename '{speedVariant.FileName}' collides with another definition."));
+                else
+                    projectedFiles[speedVariant.FileName] = pair.Key;
             }
         }
 

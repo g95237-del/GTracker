@@ -12,7 +12,9 @@ public sealed record GodotRuntimeMapping(
     int? CycleDurationMilliseconds,
     bool IsReaction,
     string SceneName = "",
-    bool ActionLoops = false);
+    bool ActionLoops = false,
+    int? ActionDurationMilliseconds = null,
+    bool AllowNearestDuration = false);
 
 public sealed record GodotRuntimeConfiguration(string EdiBaseUrl, IReadOnlyList<GodotRuntimeMapping> Mappings);
 
@@ -39,6 +41,8 @@ internal static class GodotDiscoveryScript
                     $"\"candidate\": {Literal(Normalize(mapping.Candidate))}",
                     $"\"path\": {Literal(mapping.ObjectPath.Trim('/'))}",
                     $"\"duration\": {mapping.CycleDurationMilliseconds ?? 0}",
+                    $"\"action_duration\": {mapping.ActionDurationMilliseconds ?? mapping.CycleDurationMilliseconds ?? 0}",
+                    $"\"nearest_duration\": {mapping.AllowNearestDuration.ToString().ToLowerInvariant()}",
                     $"\"action\": {Literal(mapping.ActionName)}",
                     $"\"reaction\": {mapping.IsReaction.ToString().ToLowerInvariant()}",
                     $"\"action_loop\": {mapping.ActionLoops.ToString().ToLowerInvariant()}",
@@ -234,7 +238,7 @@ internal static class GodotDiscoveryScript
                 return
             var already_active = _active_owner == id and _runtime_states.has(id) and _runtime_states[id].action == mapping.action
             _runtime_sequence += 1
-            _runtime_states[id] = {"action": mapping.action, "reaction": mapping.reaction, "action_loop": mapping.action_loop, "seek": int(round(max(0.0, phase) * 1000.0)), "sequence": _runtime_sequence}
+            _runtime_states[id] = {"action": mapping.action, "reaction": mapping.reaction, "action_loop": mapping.action_loop, "seek": _scaled_seek(phase, duration, mapping.action_duration), "sequence": _runtime_sequence}
             if _active_owner != 0 and _runtime_states.has(_active_owner) and _runtime_states[_active_owner].reaction and not mapping.reaction:
                 return
             _active_owner = id
@@ -256,8 +260,11 @@ internal static class GodotDiscoveryScript
                 return
             if not _runtime_states.has(id):
                 _runtime_sequence += 1
+            var action_changed = _runtime_states.has(id) and _runtime_states[id].action != mapping.action
             var sequence = _runtime_states[id].sequence if _runtime_states.has(id) else _runtime_sequence
-            _runtime_states[id] = {"action": mapping.action, "reaction": mapping.reaction, "action_loop": mapping.action_loop, "seek": int(round(max(0.0, phase) * 1000.0)), "sequence": sequence}
+            _runtime_states[id] = {"action": mapping.action, "reaction": mapping.reaction, "action_loop": mapping.action_loop, "seek": _scaled_seek(phase, duration, mapping.action_duration), "sequence": sequence}
+            if _active_owner == id and action_changed:
+                _play(mapping.action, _runtime_states[id].seek, "animation-speed-change")
 
 
         func _deactivate_animation(id):
@@ -312,7 +319,7 @@ internal static class GodotDiscoveryScript
                 var portable = mapping.portable and _portable_animation_name(mapping.candidate) == portable_candidate and _owner_matches(mapping.owner, owner)
                 if not exact and not portable:
                     continue
-                if mapping.duration > 0 and abs(mapping.duration - duration) > max(25, int(mapping.duration / 10)):
+                if mapping.duration > 0 and not mapping.nearest_duration and abs(mapping.duration - duration) > max(25, int(mapping.duration / 10)):
                     continue
                 var score = (16 if exact else 4) + (4 if exact and mapping.scene != "" else 0) + (2 if exact and mapped_path != "" else 0) + (1 if mapping.duration > 0 else 0)
                 var distance = abs(mapping.duration - duration) if mapping.duration > 0 else 2147483647
@@ -349,6 +356,13 @@ internal static class GodotDiscoveryScript
                 if not character in "0123456789":
                     return false
             return true
+
+
+        func _scaled_seek(phase, observed_duration, action_duration):
+            var observed_seek = max(0.0, phase) * 1000.0
+            if observed_duration <= 0 or action_duration <= 0:
+                return int(round(observed_seek))
+            return int(round(clamp(observed_seek / observed_duration, 0.0, 1.0) * action_duration))
 
 
         func _play(action, seek, source):

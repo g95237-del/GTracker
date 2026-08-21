@@ -44,7 +44,7 @@ public enum UnityTriggerKind
 
 public sealed class StudioProject
 {
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
 
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -53,6 +53,7 @@ public sealed class StudioProject
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public GameTarget Game { get; set; } = new();
     public List<string> Variants { get; set; } = [];
+    public List<double> SpeedMultipliers { get; set; } = [1.0];
     public List<AuthoredAction> Actions { get; set; } = [];
     public List<BundleDefinition> Bundles { get; set; } = [];
 

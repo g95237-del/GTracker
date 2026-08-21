@@ -127,7 +127,9 @@ public sealed class EdiExporter
                 CancellationToken.None);
             File.Move(temporaryManifest, manifestTarget, true);
 
-            var definitionCount = project.GetLogicalActions().Count + (ShouldWriteBuiltInFiller(project) ? 1 : 0);
+            var definitionCount = project.GetLogicalActions()
+                .Sum(action => EdiSpeedVariants.Create(action, project.SpeedMultipliers).Count) +
+                (ShouldWriteBuiltInFiller(project) ? 1 : 0);
             return new(outputDirectory, definitionCount, scriptCount, issues);
         }
         finally
@@ -152,14 +154,17 @@ public sealed class EdiExporter
         foreach (var definition in definitions)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            definitionLines.Add(string.Join(',',
-                EscapeCsv(definition.Name),
-                EscapeCsv(definition.FileName),
-                "0",
-                definition.DurationMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                definition.Type.ToString().ToLowerInvariant(),
-                definition.Loop ? "true" : "false",
-                EscapeCsv(definition.Description)));
+            foreach (var speedVariant in EdiSpeedVariants.Create(definition, project.SpeedMultipliers))
+            {
+                definitionLines.Add(string.Join(',',
+                    EscapeCsv(speedVariant.ActionName),
+                    EscapeCsv(speedVariant.FileName),
+                    "0",
+                    speedVariant.DurationMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    definition.Type.ToString().ToLowerInvariant(),
+                    definition.Loop ? "true" : "false",
+                    EscapeCsv(definition.Description)));
+            }
         }
 
         foreach (var action in project.Actions)
@@ -171,13 +176,19 @@ public sealed class EdiExporter
                 : Path.Combine(outputDirectory, variant);
             Directory.CreateDirectory(scriptDirectory);
 
-            foreach (var track in action.Tracks)
+            foreach (var speedVariant in EdiSpeedVariants.Create(action, project.SpeedMultipliers))
             {
-                var suffix = track.Axis == EdiAxis.Default ? string.Empty : $".{track.Axis.ToString().ToLowerInvariant()}";
-                var scriptPath = Path.Combine(scriptDirectory, $"{action.FileName}{suffix}.funscript");
-                var preview = CreateFunscriptPreview(track.Points, action.DurationMilliseconds, action.Loop);
-                await File.WriteAllTextAsync(scriptPath, preview.Json, Utf8WithoutBom, cancellationToken);
-                scriptCount++;
+                foreach (var track in action.Tracks)
+                {
+                    var suffix = track.Axis == EdiAxis.Default ? string.Empty : $".{track.Axis.ToString().ToLowerInvariant()}";
+                    var scriptPath = Path.Combine(scriptDirectory, $"{speedVariant.FileName}{suffix}.funscript");
+                    var scaledPoints = speedVariant.IsBase
+                        ? track.Points
+                        : EdiSpeedVariants.ScalePoints(track.Points, action.DurationMilliseconds, speedVariant.DurationMilliseconds);
+                    var preview = CreateFunscriptPreview(scaledPoints, speedVariant.DurationMilliseconds, action.Loop);
+                    await File.WriteAllTextAsync(scriptPath, preview.Json, Utf8WithoutBom, cancellationToken);
+                    scriptCount++;
+                }
             }
         }
 

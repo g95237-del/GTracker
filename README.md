@@ -114,7 +114,7 @@ The manifest manages files at the entire `Gallery` root. Re-exporting the same p
 
 Godot 4 exports can currently be analyzed, but installation remains disabled until a representative Godot 4 candidate is validated.
 
-Godot speed changes are reported using effective wall-clock duration and labels such as `Maid - p1 (2x)`. Because EDI has no verified playback-speed endpoint, capture and map a separate authored action for each speed bucket that needs accurate synchronization. Reusing a 1x script at 2x is intentionally not automatic because it would desynchronize device output from the game.
+Godot speed changes are reported using effective wall-clock duration and labels such as `Maid - p1 (2x)`. The project-wide **SPEEDS** setting generates synchronized EDI actions without duplicating authored scenes: each coefficient scales every funscript timestamp linearly while preserving positions, workspaces, and axes. For example, a 2250 ms action generates a 3000 ms `0.75x` action and a 1125 ms `2x` action. Runtime mappings select the closest generated duration and switch actions when a Gallery speed control changes the active animation speed.
 
 Some games externally wrap an `AnimationPlayer` while its animation resource reports `loop=false`. GTracker detects the observed phase wrap as `ANIMATION_RESTART`. If the authored EDI action is marked **Clean loop**, EDI loops it natively until the game changes or stops that mapped animation; otherwise GTracker restarts the action at each observed wrap.
 

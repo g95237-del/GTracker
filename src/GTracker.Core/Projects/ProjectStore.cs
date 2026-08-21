@@ -65,11 +65,15 @@ public sealed class ProjectStore
                 $"Project schema {project.SchemaVersion} is not supported by this build (latest {StudioProject.CurrentSchemaVersion}).");
         }
 
+        var sourceSchemaVersion = project.SchemaVersion;
         project.Game ??= new GameTarget();
         project.Game.Simulator ??= new LinearSimulatorLayout();
         project.Game.TriggerMappings ??= [];
         foreach (var mapping in project.Game.TriggerMappings) mapping.SceneName ??= string.Empty;
         project.Variants ??= [];
+        project.SpeedMultipliers = sourceSchemaVersion < 3
+            ? EdiSpeedVariants.RecommendedMultipliers.ToList()
+            : EdiSpeedVariants.NormalizeMultipliers(project.SpeedMultipliers).ToList();
         project.Actions ??= [];
         project.Bundles ??= [];
         foreach (var action in project.Actions)

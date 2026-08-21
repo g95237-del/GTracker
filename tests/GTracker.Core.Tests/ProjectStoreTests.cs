@@ -50,6 +50,7 @@ public sealed class ProjectStoreTests
             var project = new StudioProject
             {
                 Name = "Round Trip",
+                SpeedMultipliers = [0.75, 1, 2],
                 Game = new GameTarget
                 {
                     Runtime = UnityRuntimeKind.Il2Cpp,
@@ -104,6 +105,7 @@ public sealed class ProjectStoreTests
             Assert.Equal(StudioProject.CurrentSchemaVersion, loaded.SchemaVersion);
             Assert.Equal(project.Id, loaded.Id);
             Assert.Equal("Round Trip", loaded.Name);
+            Assert.Equal([0.75, 1, 2], loaded.SpeedMultipliers);
             Assert.Equal(UnityRuntimeKind.Il2Cpp, loaded.Game.Runtime);
             Assert.Equal("net6.0", loaded.Game.TargetFramework);
             Assert.Equal(UnityModPresetKind.AnimationNames, loaded.Game.ModPreset);
@@ -204,6 +206,28 @@ public sealed class ProjectStoreTests
             Assert.Equal(StudioProject.CurrentSchemaVersion, loaded.SchemaVersion);
             Assert.Equal(actionId, Assert.Single(loaded.Actions).DefinitionId);
             Assert.Equal(["detailed"], loaded.Variants);
+            Assert.Equal(EdiSpeedVariants.RecommendedMultipliers, loaded.SpeedMultipliers);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task Load_MigratesSchemaTwoProjectToRecommendedSpeedVariants()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "EdiIntegrationStudio.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(directory, ProjectStore.ProjectFileName),
+                "{\"schemaVersion\":2,\"game\":{},\"actions\":[]}");
+
+            var loaded = await new ProjectStore().LoadAsync(directory);
+
+            Assert.Equal(StudioProject.CurrentSchemaVersion, loaded.SchemaVersion);
+            Assert.Equal(EdiSpeedVariants.RecommendedMultipliers, loaded.SpeedMultipliers);
         }
         finally
         {
