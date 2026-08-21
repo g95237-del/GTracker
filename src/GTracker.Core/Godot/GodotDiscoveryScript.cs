@@ -92,20 +92,25 @@ internal static class GodotDiscoveryScript
         extends Node
 
         const POLL_SECONDS = 0.10
-        const UPDATE_SECONDS = 0.25
+        const RUNTIME_UPDATE_SECONDS = 0.25
+        const TELEMETRY_UPDATE_SECONDS = 1.0
         const TELEMETRY_RELATIVE_PATH = "GTrackerRuntime/Godot/telemetry.tsv"
         const EDI_BASE_URL = __EDI_BASE_URL__
 
         var _elapsed = 0.0
-        var _update_elapsed = 0.0
+        var _runtime_update_elapsed = 0.0
+        var _telemetry_update_elapsed = 0.0
         var _scene_id = 0
         var _scene_name = ""
         var _players = {}
         var _owners = {}
         var _states = {}
         var _telemetry_path = ""
+        var _telemetry_lines = []
         var _scene_mappings = __SCENE_MAPPINGS__
         var _animation_mappings = __ANIMATION_MAPPINGS__
+        var _exact_mapping_index = {}
+        var _portable_mapping_index = {}
         var _active_owner = 0
         var _active_action = ""
         var _runtime_states = {}
@@ -119,6 +124,7 @@ internal static class GodotDiscoveryScript
             pause_mode = Node.PAUSE_MODE_PROCESS
             var game_root = OS.get_executable_path().get_base_dir()
             _telemetry_path = game_root.plus_file(TELEMETRY_RELATIVE_PATH)
+            _index_animation_mappings()
             get_tree().connect("node_added", self, "_on_node_added")
             _index_node(get_tree().root)
             if EDI_BASE_URL != "":
@@ -135,18 +141,25 @@ internal static class GodotDiscoveryScript
             if EDI_BASE_URL != "":
                 _queue_post("/Stop")
             _emit("SESSION", _scene_name, "", "observer-stopped", "")
+            _flush_telemetry()
 
 
         func _process(delta):
             _elapsed += delta
-            _update_elapsed += delta
+            _runtime_update_elapsed += delta
+            _telemetry_update_elapsed += delta
             if _elapsed < POLL_SECONDS:
                 return
             _elapsed = 0.0
             _poll_scene()
-            _poll_players(_update_elapsed >= UPDATE_SECONDS)
-            if _update_elapsed >= UPDATE_SECONDS:
-                _update_elapsed = 0.0
+            var update_runtime = _runtime_update_elapsed >= RUNTIME_UPDATE_SECONDS
+            var emit_telemetry_update = _telemetry_update_elapsed >= TELEMETRY_UPDATE_SECONDS
+            _poll_players(update_runtime, emit_telemetry_update)
+            _flush_telemetry()
+            if update_runtime:
+                _runtime_update_elapsed = 0.0
+            if emit_telemetry_update:
+                _telemetry_update_elapsed = 0.0
 
 
         func _on_node_added(node):
@@ -161,6 +174,19 @@ internal static class GodotDiscoveryScript
                 _owners[id] = {"key": _owner_key(node, resource), "resource": resource}
             for child in node.get_children():
                 _index_node(child)
+
+
+        func _index_animation_mappings():
+            for mapping in _animation_mappings:
+                var exact_key = mapping.candidate + "|" + mapping.scene
+                if not _exact_mapping_index.has(exact_key):
+                    _exact_mapping_index[exact_key] = []
+                _exact_mapping_index[exact_key].append(mapping)
+                if mapping.portable:
+                    var portable_key = _portable_animation_name(mapping.candidate)
+                    if not _portable_mapping_index.has(portable_key):
+                        _portable_mapping_index[portable_key] = []
+                    _portable_mapping_index[portable_key].append(mapping)
 
 
         func _poll_scene():
@@ -178,7 +204,7 @@ internal static class GodotDiscoveryScript
             _activate_fallback()
 
 
-        func _poll_players(emit_update):
+        func _poll_players(update_runtime, emit_telemetry_update):
             var stale = []
             for id in _players.keys():
                 var player = _players[id].get_ref()
@@ -191,28 +217,30 @@ internal static class GodotDiscoveryScript
                     animation = player.assigned_animation
                 var position = player.current_animation_position
                 var length = player.current_animation_length
-                var path = str(player.get_path())
-                var loop = false
-                if animation != "" and player.has_animation(animation):
-                    loop = player.get_animation(animation).loop
                 var previous = _states.get(id, {})
                 var was_playing = previous.get("playing", false)
                 var previous_animation = previous.get("animation", "")
                 var previous_position = previous.get("position", 0.0)
+                var loop = previous.get("loop", false)
+                if animation != previous_animation and animation != "" and player.has_animation(animation):
+                    loop = player.get_animation(animation).loop
                 var effective_speed = player.get_playing_speed()
-                var owner_details = _owner_details(id)
+                var has_event = playing and (not was_playing or previous_animation != animation) or playing and previous_animation == animation and _wrapped(previous_position, position, length, effective_speed) or not playing and was_playing or playing and update_runtime
+                var path = str(player.get_path()) if has_event else ""
+                var owner_details = _owner_details(id) if has_event and emit_telemetry_update else ""
                 if playing and (not was_playing or previous_animation != animation):
-                    _emit("ANIMATION_START", _scene_name, path, animation, _timing_details(position, length, effective_speed, loop) + owner_details)
+                    _emit("ANIMATION_START", _scene_name, path, animation, _timing_details(position, length, effective_speed, loop) + _owner_details(id))
                     _activate_animation(id, animation, path, length, position, effective_speed)
                 elif playing and previous_animation == animation and _wrapped(previous_position, position, length, effective_speed):
                     var wrap_kind = "ANIMATION_LOOP" if loop else "ANIMATION_RESTART"
-                    _emit(wrap_kind, _scene_name, path, animation, _timing_details(position, length, effective_speed, true) + owner_details)
+                    _emit(wrap_kind, _scene_name, path, animation, _timing_details(position, length, effective_speed, true) + _owner_details(id))
                     _activate_animation(id, animation, path, length, position, effective_speed, true)
                 elif not playing and was_playing:
-                    _emit("ANIMATION_STOP", _scene_name, path, previous_animation, _timing_details(previous_position, previous.get("length", 0.0), previous.get("speed", 0.0), previous.get("loop", false)) + owner_details)
+                    _emit("ANIMATION_STOP", _scene_name, path, previous_animation, _timing_details(previous_position, previous.get("length", 0.0), previous.get("speed", 0.0), previous.get("loop", false)) + _owner_details(id))
                     _deactivate_animation(id)
-                elif playing and emit_update:
-                    _emit("ANIMATION_UPDATE", _scene_name, path, animation, _timing_details(position, length, effective_speed, loop) + owner_details)
+                elif playing and update_runtime:
+                    if emit_telemetry_update:
+                        _emit("ANIMATION_UPDATE", _scene_name, path, animation, _timing_details(position, length, effective_speed, loop) + owner_details)
                     if _active_owner == 0:
                         _activate_animation(id, animation, path, length, position, effective_speed)
                     else:
@@ -308,12 +336,20 @@ internal static class GodotDiscoveryScript
             var normalized = _normalize(candidate)
             var portable_candidate = _portable_animation_name(normalized)
             var path = str(object_path).trim_prefix("/").trim_suffix("/")
+            var scene = _normalize(_scene_name)
+            var candidates = []
+            for mapping in _exact_mapping_index.get(normalized + "|" + scene, []):
+                candidates.append(mapping)
+            for mapping in _exact_mapping_index.get(normalized + "|", []):
+                candidates.append(mapping)
+            for mapping in _portable_mapping_index.get(portable_candidate, []):
+                candidates.append(mapping)
             var best = {}
             var best_score = -1
             var best_distance = 2147483647
-            for mapping in _animation_mappings:
+            for mapping in candidates:
                 var mapped_path = mapping.path
-                var scene_matches = mapping.scene == "" or mapping.scene == _normalize(_scene_name)
+                var scene_matches = mapping.scene == "" or mapping.scene == scene
                 var path_matches = mapped_path == "" or mapped_path == path or path.ends_with("/" + mapped_path)
                 var exact = mapping.candidate == normalized and scene_matches and path_matches
                 var portable = mapping.portable and _portable_animation_name(mapping.candidate) == portable_candidate and _owner_matches(mapping.owner, owner)
@@ -458,14 +494,22 @@ internal static class GodotDiscoveryScript
 
 
         func _emit(kind, scene, object_path, candidate, details):
+            _telemetry_lines.append("%s\t%s\t%s\t%s\t%s\t%s" % [_timestamp(), _clean(kind), _clean(scene), _clean(object_path), _clean(candidate), _clean(details)])
+
+
+        func _flush_telemetry():
+            if _telemetry_lines.empty():
+                return
             var file = File.new()
             var error = file.open(_telemetry_path, File.READ_WRITE)
             if error != OK:
                 push_error("GTracker telemetry open failed: %s" % error)
                 return
             file.seek_end()
-            file.store_line("%s\t%s\t%s\t%s\t%s\t%s" % [_timestamp(), _clean(kind), _clean(scene), _clean(object_path), _clean(candidate), _clean(details)])
+            for line in _telemetry_lines:
+                file.store_line(line)
             file.close()
+            _telemetry_lines.clear()
 
 
         func _timestamp():

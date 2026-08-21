@@ -197,7 +197,7 @@ public sealed class GodotDiscoveryProvisionerTests
             Assert.Contains("menu action", script);
             Assert.Contains("root/Main/Player", script);
             Assert.Contains("resscenesbattletscn", script);
-            Assert.Contains("mapping.scene == _normalize(_scene_name)", script);
+            Assert.Contains("mapping.scene == scene", script);
             Assert.Contains("\"action_loop\": true", script);
             Assert.Contains("ANIMATION_RESTART", script);
             Assert.Contains("wrapped and already_active and mapping.action_loop", script);
@@ -211,6 +211,13 @@ public sealed class GodotDiscoveryProvisionerTests
             Assert.Contains("\"portable\": false", script);
             Assert.Contains("\"owner\": \"maid\"", script);
             Assert.Contains("func _portable_animation_name", script);
+            Assert.Contains("func _index_animation_mappings", script);
+            Assert.Contains("_exact_mapping_index.get", script);
+            Assert.Contains("_portable_mapping_index.get", script);
+            Assert.DoesNotContain("for mapping in _animation_mappings:\n        var mapped_path", script);
+            Assert.Contains("const TELEMETRY_UPDATE_SECONDS = 1.0", script);
+            Assert.Contains("func _flush_telemetry", script);
+            Assert.Contains("_telemetry_lines.append", script);
             Assert.Contains("func _owner_resource", script);
             Assert.Contains("ownerResource=", script);
             Assert.Contains("_owner_matches(mapping.owner, owner)", script);
