@@ -2427,12 +2427,13 @@ public partial class MainWindow : Window
 
     private async void ApplyGodotMappings_Click(object sender, RoutedEventArgs e)
     {
+        var executable = GodotExecutableText.Text.Trim();
         if (!await _godotOperationGate.WaitAsync(0)) return;
         SetGodotToolsBusy(true);
         try
         {
             var configuration = CreateGodotRuntimeConfiguration();
-            await Task.Run(() => _godotDiscoveryProvisioner.UpdateRuntime(GodotExecutableText.Text.Trim(), configuration));
+            await Task.Run(() => _godotDiscoveryProvisioner.UpdateRuntime(executable, configuration));
             SetStatus($"Applied {_project.Game.TriggerMappings.Count} Godot runtime mapping(s). Launch with EDI running to test playback.");
         }
         catch (Exception exception)
@@ -2456,16 +2457,17 @@ public partial class MainWindow : Window
         }
         var dialog = new OpenFolderDialog { Title = "Choose the fresh EDI folder containing Edi.exe" };
         if (dialog.ShowDialog(this) != true) return;
+        var sourceDirectory = dialog.FolderName;
         var gameRoot = Path.GetDirectoryName(Path.GetFullPath(executable))!;
         if (MessageBox.Show(this,
-                $"Copy EDI from:{Environment.NewLine}{dialog.FolderName}{Environment.NewLine}{Environment.NewLine}Into:{Environment.NewLine}{gameRoot}" +
+                $"Copy EDI from:{Environment.NewLine}{sourceDirectory}{Environment.NewLine}{Environment.NewLine}Into:{Environment.NewLine}{gameRoot}" +
                 $"{Environment.NewLine}{Environment.NewLine}Existing matching files will be replaced. Gallery contents are preserved.",
                 "Install EDI", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         if (!await _godotOperationGate.WaitAsync(0)) return;
         SetGodotToolsBusy(true);
         try
         {
-            var result = await Task.Run(() => _runtimeProvisioner.InstallEdi(executable, dialog.FolderName));
+            var result = await Task.Run(() => _runtimeProvisioner.InstallEdi(executable, sourceDirectory));
             MessageBox.Show(this, $"Installed {result.InstalledFileCount} EDI files ({result.ReplacedFileCount} replaced)." +
                                   $"{Environment.NewLine}Gallery preserved at:{Environment.NewLine}{result.GalleryPath}",
                 "EDI installation complete", MessageBoxButton.OK, MessageBoxImage.Information);
