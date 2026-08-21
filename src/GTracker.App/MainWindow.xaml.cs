@@ -1828,7 +1828,7 @@ public partial class MainWindow : Window
             }
             if (automaticMapping is not null)
                 candidate.Game.SetTriggerMapping(automaticMapping.Kind, automaticMapping.Candidate, action.Name,
-                    automaticMapping.ObjectPath, automaticMapping.CycleDurationMilliseconds);
+                    automaticMapping.ObjectPath, automaticMapping.CycleDurationMilliseconds, automaticMapping.SceneName);
             var errors = _validator.Validate(candidate).Where(issue => issue.Severity == ValidationSeverity.Error).ToArray();
             if (errors.Length > 0)
             {
@@ -2010,7 +2010,8 @@ public partial class MainWindow : Window
                     Candidate = mapping.Candidate,
                     ActionName = mapping.ActionName,
                     ObjectPath = mapping.ObjectPath,
-                    CycleDurationMilliseconds = mapping.CycleDurationMilliseconds
+                    CycleDurationMilliseconds = mapping.CycleDurationMilliseconds,
+                    SceneName = mapping.SceneName
                 }).ToList(),
                 Simulator = new LinearSimulatorLayout
                 {
@@ -2494,7 +2495,7 @@ public partial class MainWindow : Window
             return;
         }
         _correlatedUnityScene = entry.Scene;
-        var preferredName = GetGodotPreferredName(entry);
+        var preferredName = entry.SuggestedName;
         _correlatedUnityAnimation = entry.Kind == "SCENE" ? string.Empty : preferredName;
         ApplyRuntimeName(preferredName);
         UpdateRuntimeCorrelationText();
@@ -2519,7 +2520,8 @@ public partial class MainWindow : Window
         var duration = GodotTelemetryLog.TryGetPlaybackTiming(entry, out var timing)
             ? Math.Max(1, (int)Math.Round(timing.CycleDuration.TotalMilliseconds)) : (int?)null;
         _project.Game.SetTriggerMapping(kind.Value, entry.Candidate, action.Name,
-            kind == UnityTriggerKind.AnimationClip ? entry.ObjectPath : string.Empty, duration);
+            kind == UnityTriggerKind.AnimationClip ? entry.ObjectPath : string.Empty, duration,
+            kind == UnityTriggerKind.AnimationClip ? entry.Scene : string.Empty);
         UpdateTriggerMappingStatus();
         if (_projectDirectory is null || await SaveProjectAsync())
             SetStatus($"Mapped Godot {kind} '{entry.Candidate}' to '{action.Name}'. Close the game and click Apply mappings.");
@@ -2580,7 +2582,7 @@ public partial class MainWindow : Window
             PrepareNewSceneForCapture();
             SetWorkingClip(clip, resetTracks: true, startUtc, endUtc);
             _correlatedUnityScene = entry.Scene;
-            var preferredName = GetGodotPreferredName(entry);
+            var preferredName = entry.SuggestedName;
             _correlatedUnityAnimation = preferredName;
             _correlatedAnimationCandidates = [entry.Candidate];
             _pendingCapturedTriggerMapping = new UnityTriggerMapping
@@ -2588,7 +2590,8 @@ public partial class MainWindow : Window
                 Kind = UnityTriggerKind.AnimationClip,
                 Candidate = entry.Candidate,
                 ObjectPath = entry.ObjectPath,
-                CycleDurationMilliseconds = Math.Max(1, (int)Math.Round(timing.CycleDuration.TotalMilliseconds))
+                CycleDurationMilliseconds = Math.Max(1, (int)Math.Round(timing.CycleDuration.TotalMilliseconds)),
+                SceneName = entry.Scene
             };
             LoopCheck.IsChecked = timing.IsLooping;
             if (IsPlaceholderSceneName(ActionNameText.Text)) ApplyRuntimeName(preferredName);
@@ -2610,25 +2613,8 @@ public partial class MainWindow : Window
         var mappings = _project.Game.TriggerMappings.Where(mapping => actions.ContainsKey(mapping.ActionName))
             .Select(mapping => new GodotRuntimeMapping(mapping.Kind, mapping.Candidate, mapping.ActionName,
                 mapping.ObjectPath, mapping.CycleDurationMilliseconds,
-                actions[mapping.ActionName].Type == EdiGalleryType.Reaction)).ToArray();
+                actions[mapping.ActionName].Type == EdiGalleryType.Reaction, mapping.SceneName)).ToArray();
         return new(EdiBaseUrlText.Text.Trim(), mappings);
-    }
-
-    private static string GetGodotPreferredName(GodotTelemetryEntry entry)
-    {
-        var candidate = entry.Candidate.Trim();
-        var generic = candidate.Equals("idle", StringComparison.OrdinalIgnoreCase) ||
-                      candidate.Equals("default", StringComparison.OrdinalIgnoreCase) ||
-                      candidate.Equals("reset", StringComparison.OrdinalIgnoreCase) ||
-                      candidate.Equals("new anim", StringComparison.OrdinalIgnoreCase) ||
-                      candidate.Equals("animation", StringComparison.OrdinalIgnoreCase);
-        if (entry.Kind != "SCENE" && !generic) return candidate;
-        var scene = entry.Kind == "SCENE" ? candidate : entry.Scene.Trim();
-        var separator = Math.Max(scene.LastIndexOf('/'), scene.LastIndexOf('\\'));
-        if (separator >= 0) scene = scene[(separator + 1)..];
-        var extension = scene.LastIndexOf('.');
-        if (extension > 0) scene = scene[..extension];
-        return string.IsNullOrWhiteSpace(scene) ? candidate : scene;
     }
 
     private void ModPresetCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)

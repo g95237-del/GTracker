@@ -31,6 +31,17 @@ public sealed class ProjectStoreTests
     }
 
     [Fact]
+    public void SetTriggerMapping_AllowsSceneConstrainedVariants()
+    {
+        var target = new GameTarget();
+
+        target.SetTriggerMapping(UnityTriggerKind.AnimationClip, "start", "small", "/root/Enemy/AnimationPlayer", 1000, "res://Small.tscn");
+        target.SetTriggerMapping(UnityTriggerKind.AnimationClip, "start", "large", "/root/Enemy/AnimationPlayer", 1000, "res://Large.tscn");
+
+        Assert.Equal(2, target.TriggerMappings.Count);
+    }
+
+    [Fact]
     public async Task SaveAndLoad_RoundTripsVersionedProject()
     {
         var directory = Path.Combine(Path.GetTempPath(), "EdiIntegrationStudio.Tests", Guid.NewGuid().ToString("N"));
@@ -57,7 +68,8 @@ public sealed class ProjectStoreTests
                             Candidate = "EnemyAttack",
                             ActionName = "intro",
                             ObjectPath = "Enemies/Goblin/Animator",
-                            CycleDurationMilliseconds = 850
+                            CycleDurationMilliseconds = 850,
+                            SceneName = "res://scenes/Battle.tscn"
                         }
                     ],
                     Simulator = new LinearSimulatorLayout
@@ -100,6 +112,7 @@ public sealed class ProjectStoreTests
             Assert.Equal("EnemyAttack", mapping.Candidate);
             Assert.Equal("Enemies/Goblin/Animator", mapping.ObjectPath);
             Assert.Equal(850, mapping.CycleDurationMilliseconds);
+            Assert.Equal("res://scenes/Battle.tscn", mapping.SceneName);
             Assert.False(loaded.Game.Simulator.IsVisible);
             Assert.Equal(0.72, loaded.Game.Simulator.CenterX);
             Assert.Equal(37, loaded.Game.Simulator.RotationDegrees);

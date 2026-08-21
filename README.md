@@ -108,7 +108,7 @@ The manifest manages files at the entire `Gallery` root. Re-exporting the same p
 1. Select **Godot** from the global engine selector, choose the exported Windows executable, and click **Analyze Godot export**.
 2. For a supported unencrypted Godot 3 export, close the game and click **Install discovery**. GTracker creates `GTrackerRuntime\Godot`, backs up an existing `override.cfg`, and adds one owned autoload entry. It does not modify the executable or PCK.
 3. Click **Launch + verify**. The game is left running after startup telemetry appears, and GTracker begins watching scene and `AnimationPlayer` events.
-4. Select a saved authored scene and a discovered event, then use **Map selected**. Timed animation mappings retain the `AnimationPlayer` path and cycle duration; **Capture cycle** uses runtime phase and speed to isolate the exact rolling-buffer interval.
+4. Select a saved authored scene and a discovered event, then use **Map selected**. Godot animation rows and captured names use their hierarchy owner plus local state (for example, `Sperm L - start`), while mappings retain the raw scene, `AnimationPlayer` path, animation name, and cycle duration. **Capture cycle** uses runtime phase and speed to isolate the exact rolling-buffer interval.
 5. Close the game and click **Apply mappings** to transactionally compile the project mappings and EDI URL into the owned autoload. Launch with EDI running to test mapped scene, animation, reaction, and filler playback.
 6. Use **Watch discovery** to reopen the existing telemetry stream. **Remove** restores the original `override.cfg` and preserves telemetry for mapping and troubleshooting.
 

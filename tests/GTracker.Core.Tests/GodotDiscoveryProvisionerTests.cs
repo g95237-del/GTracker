@@ -153,7 +153,8 @@ public sealed class GodotDiscoveryProvisionerTests
             var runtime = new GodotRuntimeConfiguration("http://127.0.0.1:5000/Edi/",
             [
                 new(UnityTriggerKind.Scene, "res://Main Menu.tscn", "menu action", "", null, false),
-                new(UnityTriggerKind.AnimationClip, "Idle", "idle/action", "/root/Main/Player", 1200, false)
+                new(UnityTriggerKind.AnimationClip, "Idle", "idle/action", "/root/Main/Player", 1200, false,
+                    "res://scenes/Battle.tscn")
             ]);
 
             provisioner.UpdateRuntime(executable, runtime);
@@ -163,6 +164,8 @@ public sealed class GodotDiscoveryProvisionerTests
             Assert.Contains("resmainmenutscn", script);
             Assert.Contains("menu action", script);
             Assert.Contains("root/Main/Player", script);
+            Assert.Contains("resscenesbattletscn", script);
+            Assert.Contains("mapping.scene != _normalize(_scene_name)", script);
             Assert.Contains("HTTPRequest.new()", script);
             Assert.Contains("HTTPClient.METHOD_POST", script);
             Assert.Contains("OS.get_system_time_msecs()", script);

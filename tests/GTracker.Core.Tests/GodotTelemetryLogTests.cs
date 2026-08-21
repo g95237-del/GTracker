@@ -4,6 +4,26 @@ namespace GTracker.Core.Tests;
 
 public sealed class GodotTelemetryLogTests
 {
+    [Theory]
+    [InlineData("res://scenes/Stages/Stage1_1.tscn", "/root/Sperm_L/AnimationPlayer", "start", "Sperm L - start")]
+    [InlineData("res://scenes/Stages/Stage1_1.tscn", "/root/stage1_1/TransCam/AnimationPlayer", "nervous", "Trans Cam - nervous")]
+    [InlineData("res://scenes/Stages/Stage1_1.tscn", "/root/stage1_1/Interactions/painting_left/PressUp/AnimationPlayer", "idle", "painting left / Press Up - idle")]
+    public void SuggestedName_UsesAnimationPlayerHierarchy(string scene, string path, string candidate, string expected)
+    {
+        var entry = new GodotTelemetryEntry(DateTimeOffset.UtcNow, "ANIMATION_START", scene, path, candidate, "");
+
+        Assert.Equal(expected, entry.SuggestedName);
+    }
+
+    [Fact]
+    public void SuggestedName_UsesSceneFileStem()
+    {
+        var entry = new GodotTelemetryEntry(DateTimeOffset.UtcNow, "SCENE", "res://scenes/Stages/Stage1_1.tscn", "",
+            "res://scenes/Stages/Stage1_1.tscn", "");
+
+        Assert.Equal("Stage1_1", entry.SuggestedName);
+    }
+
     [Fact]
     public void PlaybackTiming_ParsesAnimationUpdate()
     {

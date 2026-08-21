@@ -10,7 +10,8 @@ public sealed record GodotRuntimeMapping(
     string ActionName,
     string ObjectPath,
     int? CycleDurationMilliseconds,
-    bool IsReaction);
+    bool IsReaction,
+    string SceneName = "");
 
 public sealed record GodotRuntimeConfiguration(string EdiBaseUrl, IReadOnlyList<GodotRuntimeMapping> Mappings);
 
@@ -35,7 +36,8 @@ internal static class GodotDiscoveryScript
                 $"\"path\": {Literal(mapping.ObjectPath.Trim('/'))}",
                 $"\"duration\": {mapping.CycleDurationMilliseconds ?? 0}",
                 $"\"action\": {Literal(mapping.ActionName)}",
-                $"\"reaction\": {mapping.IsReaction.ToString().ToLowerInvariant()}") + "}");
+                $"\"reaction\": {mapping.IsReaction.ToString().ToLowerInvariant()}",
+                $"\"scene\": {Literal(Normalize(mapping.SceneName))}") + "}");
         return Template
             .Replace("__EDI_BASE_URL__", Literal(baseUrl), StringComparison.Ordinal)
             .Replace("__SCENE_MAPPINGS__", "{" + string.Join(", ", scenes) + "}", StringComparison.Ordinal)
@@ -272,12 +274,14 @@ internal static class GodotDiscoveryScript
             for mapping in _animation_mappings:
                 if mapping.candidate != normalized:
                     continue
+                if mapping.scene != "" and mapping.scene != _normalize(_scene_name):
+                    continue
                 var mapped_path = mapping.path
                 if mapped_path != "" and mapped_path != path and not path.ends_with("/" + mapped_path):
                     continue
                 if mapping.duration > 0 and abs(mapping.duration - duration) > max(25, int(mapping.duration / 10)):
                     continue
-                var score = (2 if mapped_path != "" else 0) + (1 if mapping.duration > 0 else 0)
+                var score = (4 if mapping.scene != "" else 0) + (2 if mapped_path != "" else 0) + (1 if mapping.duration > 0 else 0)
                 var distance = abs(mapping.duration - duration) if mapping.duration > 0 else 2147483647
                 if score > best_score or (score == best_score and distance < best_distance):
                     best = mapping

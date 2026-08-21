@@ -68,6 +68,7 @@ public sealed class ProjectStore
         project.Game ??= new GameTarget();
         project.Game.Simulator ??= new LinearSimulatorLayout();
         project.Game.TriggerMappings ??= [];
+        foreach (var mapping in project.Game.TriggerMappings) mapping.SceneName ??= string.Empty;
         project.Variants ??= [];
         project.Actions ??= [];
         project.Bundles ??= [];

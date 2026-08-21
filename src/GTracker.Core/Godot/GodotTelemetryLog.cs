@@ -11,7 +11,8 @@ public sealed record GodotTelemetryEntry(
     string Candidate,
     string Details)
 {
-    public string DisplayText => $"{Timestamp:HH:mm:ss}  {Kind,-18}  {Candidate}  {ObjectPath}";
+    public string SuggestedName => GodotTelemetryLog.GetSuggestedName(this);
+    public string DisplayText => $"{Timestamp:HH:mm:ss}  {Kind,-18}  {SuggestedName}  {ObjectPath}";
 }
 
 public sealed record GodotPlaybackTiming(TimeSpan CycleDuration, TimeSpan Phase, bool IsLooping)
@@ -21,6 +22,29 @@ public sealed record GodotPlaybackTiming(TimeSpan CycleDuration, TimeSpan Phase,
 
 public static class GodotTelemetryLog
 {
+    private static readonly HashSet<string> ContextDependentOwners = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "AnimationPlayer", "AnimatedSprite", "Control", "Node", "Node2D", "Player", "Position2D",
+        "PressDown", "PressUp", "Spatial", "Sprite"
+    };
+
+    public static string GetSuggestedName(GodotTelemetryEntry entry)
+    {
+        var candidate = entry.Candidate.Trim();
+        if (entry.Kind == "SCENE") return SceneStem(candidate);
+        var segments = entry.ObjectPath.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries).ToList();
+        if (segments.Count > 0 && segments[0].Equals("root", StringComparison.OrdinalIgnoreCase)) segments.RemoveAt(0);
+        if (segments.Count > 0 && Normalize(segments[0]) == Normalize(SceneStem(entry.Scene))) segments.RemoveAt(0);
+        if (segments.Count > 0 && segments[^1].Equals("AnimationPlayer", StringComparison.OrdinalIgnoreCase)) segments.RemoveAt(segments.Count - 1);
+        if (segments.Count == 0) return DisplayWords(candidate);
+        var owner = segments[^1];
+        var ownerLabel = DisplayWords(owner);
+        if (segments.Count > 1 && (ContextDependentOwners.Contains(owner) || owner.All(char.IsDigit)))
+            ownerLabel = $"{DisplayWords(segments[^2])} / {ownerLabel}";
+        var state = DisplayWords(candidate);
+        return string.IsNullOrWhiteSpace(state) ? ownerLabel : $"{ownerLabel} - {state}";
+    }
+
     public static bool IsRuntimeCandidateEvent(string kind) =>
         kind is "ANIMATION_START" or "ANIMATION_LOOP" or "ANIMATION_UPDATE" or "ANIMATION_STOP";
 
@@ -58,6 +82,34 @@ public static class GodotTelemetryLog
         if (columns.Length != 6 || !DateTimeOffset.TryParse(columns[0], CultureInfo.InvariantCulture,
                 DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var timestamp)) return null;
         return new(timestamp, columns[1], columns[2], columns[3], columns[4], columns[5]);
+    }
+
+    private static string SceneStem(string value)
+    {
+        var separator = Math.Max(value.LastIndexOf('/'), value.LastIndexOf('\\'));
+        if (separator >= 0) value = value[(separator + 1)..];
+        var extension = value.LastIndexOf('.');
+        return extension > 0 ? value[..extension] : value;
+    }
+
+    private static string Normalize(string value) => new(value.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+
+    private static string DisplayWords(string value)
+    {
+        var output = new StringBuilder(value.Length + 8);
+        for (var index = 0; index < value.Length; index++)
+        {
+            var character = value[index];
+            if (character is '_' or '-')
+            {
+                if (output.Length > 0 && output[^1] != ' ') output.Append(' ');
+                continue;
+            }
+            if (index > 0 && char.IsUpper(character) && char.IsLower(value[index - 1]) && output.Length > 0 && output[^1] != ' ')
+                output.Append(' ');
+            output.Append(character);
+        }
+        return output.ToString().Trim();
     }
 }
 
