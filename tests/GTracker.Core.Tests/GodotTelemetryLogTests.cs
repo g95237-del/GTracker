@@ -58,6 +58,18 @@ public sealed class GodotTelemetryLogTests
     }
 
     [Fact]
+    public void PlaybackStreamKey_MatchesStartWithObservedRestart()
+    {
+        var started = new GodotTelemetryEntry(DateTimeOffset.UtcNow, "ANIMATION_START", "res://Gallery.tscn",
+            "/root/Gallery/Units/Boss1/AnimationPlayer", "p1", "loop=false");
+        var restarted = started with { Kind = "ANIMATION_RESTART", Details = "loop=true" };
+
+        Assert.True(GodotTelemetryLog.IsObservedLoopEvent(restarted.Kind));
+        Assert.False(GodotTelemetryLog.IsObservedLoopEvent(started.Kind));
+        Assert.Equal(GodotTelemetryLog.GetPlaybackStreamKey(started), GodotTelemetryLog.GetPlaybackStreamKey(restarted));
+    }
+
+    [Fact]
     public async Task Read_ParsesCompleteRecordsAndIgnoresMalformedTail()
     {
         var directory = CreateTemporaryDirectory();

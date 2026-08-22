@@ -53,6 +53,11 @@ public static class GodotTelemetryLog
     public static bool IsTimedPlaybackEvent(string kind) =>
         kind is "ANIMATION_START" or "ANIMATION_LOOP" or "ANIMATION_RESTART" or "ANIMATION_UPDATE";
 
+    public static bool IsObservedLoopEvent(string kind) => kind is "ANIMATION_LOOP" or "ANIMATION_RESTART";
+
+    public static string GetPlaybackStreamKey(GodotTelemetryEntry entry) =>
+        string.Join('\0', entry.Scene, entry.ObjectPath, entry.Candidate).ToUpperInvariant();
+
     public static bool TryGetPlaybackTiming(GodotTelemetryEntry item, out GodotPlaybackTiming timing)
     {
         timing = default!;

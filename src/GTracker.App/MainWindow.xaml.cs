@@ -69,6 +69,7 @@ public partial class MainWindow : Window
     private readonly HashSet<string> _suppressedGodotTelemetryKinds = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _suppressedGodotTelemetryCandidates = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _suppressedGodotTelemetryStreams = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _observedGodotLoopingStreams = new(StringComparer.Ordinal);
     private StudioProject _project = new();
     private string? _projectDirectory;
     private CaptureSession? _captureSession;
@@ -2622,7 +2623,8 @@ public partial class MainWindow : Window
                 CycleDurationMilliseconds = Math.Max(1, (int)Math.Round(timing.CycleDuration.TotalMilliseconds)),
                 SceneName = entry.Scene
             };
-            LoopCheck.IsChecked = timing.IsLooping;
+            LoopCheck.IsChecked = timing.IsLooping ||
+                                  _observedGodotLoopingStreams.Contains(GodotTelemetryLog.GetPlaybackStreamKey(entry));
             if (IsPlaceholderSceneName(ActionNameText.Text)) ApplyRuntimeName(preferredName);
             UpdateRuntimeCorrelationText();
             UpdateTriggerMappingStatus();
@@ -3451,6 +3453,7 @@ public partial class MainWindow : Window
         _project.Game.TelemetryPath = path;
         _godotTelemetryCursor.Reset();
         _godotTelemetryEntries.Clear();
+        _observedGodotLoopingStreams.Clear();
         _godotTelemetryOutputPaused = false;
         RefreshGodotTelemetry();
         _godotTelemetryTimer.Start();
@@ -3489,7 +3492,14 @@ public partial class MainWindow : Window
             GodotTelemetryStatusText.Text = $"Read failed: {exception.Message}";
             return;
         }
-        if (result.WasReset) _godotTelemetryEntries.Clear();
+        if (result.WasReset)
+        {
+            _godotTelemetryEntries.Clear();
+            _observedGodotLoopingStreams.Clear();
+        }
+        foreach (var entry in result.Entries)
+            if (GodotTelemetryLog.IsObservedLoopEvent(entry.Kind))
+                _observedGodotLoopingStreams.Add(GodotTelemetryLog.GetPlaybackStreamKey(entry));
         if (_godotTelemetryOutputPaused)
         {
             UpdateGodotTelemetryStatus();
