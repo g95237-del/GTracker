@@ -51,6 +51,11 @@ public sealed class GodotDiscoveryProvisionerTests
             Assert.True(File.Exists(result.ScriptPath));
             Assert.True(File.Exists(result.TelemetryPath));
             Assert.True(File.Exists(result.ManifestPath));
+            var hotkeyConfigPath = Path.Combine(directory, "GTrackerRuntime", "Godot", "hotkeys.cfg");
+            Assert.True(File.Exists(hotkeyConfigPath));
+            var hotkeyConfig = File.ReadAllText(hotkeyConfigPath);
+            Assert.Contains("Pause=\"1 | NumPad1\"", hotkeyConfig);
+            Assert.Contains("ActivateFiller=\"5 | NumPad5\"", hotkeyConfig);
             var config = File.ReadAllText(result.OverrideConfigPath);
             Assert.Contains("[autoload]", config);
             Assert.Contains("GTrackerDiscovery=\"*", config);
@@ -61,6 +66,9 @@ public sealed class GodotDiscoveryProvisionerTests
             Assert.Contains("get_playing_speed()", script);
             Assert.Contains("func _wrapped", script);
             Assert.Contains("telemetry.tsv", script);
+            Assert.Contains("hotkeys.cfg", script);
+            Assert.Contains("Input.is_key_pressed", script);
+            Assert.Contains("OS.is_window_focused()", script);
 
             provisioner.Uninstall(executable);
 
@@ -68,6 +76,7 @@ public sealed class GodotDiscoveryProvisionerTests
             Assert.False(File.Exists(result.ScriptPath));
             Assert.False(File.Exists(result.ManifestPath));
             Assert.True(File.Exists(result.TelemetryPath));
+            Assert.True(File.Exists(hotkeyConfigPath));
         }
         finally
         {
@@ -169,6 +178,29 @@ public sealed class GodotDiscoveryProvisionerTests
     }
 
     [Fact]
+    public void Reinstall_PreservesEditedHotkeyConfiguration()
+    {
+        var directory = CreateGodot3Target();
+        try
+        {
+            var executable = Path.Combine(directory, "Game.exe");
+            var hotkeyConfigPath = Path.Combine(directory, "GTrackerRuntime", "Godot", "hotkeys.cfg");
+            var provisioner = new GodotDiscoveryProvisioner();
+            provisioner.Install(executable);
+            File.WriteAllText(hotkeyConfigPath, "[Hotkeys]\nPause=\"F6\"\n");
+            provisioner.Uninstall(executable);
+
+            provisioner.Install(executable);
+
+            Assert.Equal("[Hotkeys]\nPause=\"F6\"\n", File.ReadAllText(hotkeyConfigPath).Replace("\r\n", "\n"));
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public void UpdateRuntime_CompilesMappingsWithoutChangingOverrideOrTelemetry()
     {
         var directory = CreateGodot3Target();
@@ -179,6 +211,8 @@ public sealed class GodotDiscoveryProvisionerTests
             var installed = provisioner.Install(executable);
             var originalOverride = File.ReadAllBytes(installed.OverrideConfigPath);
             File.WriteAllText(installed.TelemetryPath, "preserved\n");
+            var hotkeyConfigPath = Path.Combine(directory, "GTrackerRuntime", "Godot", "hotkeys.cfg");
+            File.Delete(hotkeyConfigPath); // Simulate an installation created before hotkey support.
             var runtime = new GodotRuntimeConfiguration("http://127.0.0.1:5000/Edi/",
             [
                 new(UnityTriggerKind.Scene, "res://Main Menu.tscn", "menu action", "", null, false),
@@ -225,10 +259,17 @@ public sealed class GodotDiscoveryProvisionerTests
             Assert.Contains("\"nearest_duration\":", script);
             Assert.Contains("func _scaled_seek", script);
             Assert.Contains("animation-speed-change", script);
+            Assert.Contains("func _poll_hotkeys", script);
+            Assert.Contains("func _parse_hotkey", script);
+            Assert.Contains("/Pause?untilResume=true", script);
+            Assert.Contains("/Resume?AtCurrentTime=false", script);
+            Assert.Contains("/Intensity/40", script);
+            Assert.Contains("_play(\"filler\", 0, \"hotkey\")", script);
             Assert.Equal(3, status.MappingCount);
             Assert.NotNull(status.UpdatedAt);
             Assert.Equal(originalOverride, File.ReadAllBytes(installed.OverrideConfigPath));
             Assert.Equal("preserved\n", File.ReadAllText(installed.TelemetryPath).Replace("\r\n", "\n"));
+            Assert.Contains("Pause=\"1 | NumPad1\"", File.ReadAllText(hotkeyConfigPath));
 
             provisioner.Uninstall(executable);
         }

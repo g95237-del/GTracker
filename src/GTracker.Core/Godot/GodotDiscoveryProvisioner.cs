@@ -21,6 +21,16 @@ public sealed class GodotDiscoveryProvisioner
     private const string RuntimeDirectoryName = "GTrackerRuntime";
     private const string ComponentDirectoryName = "Godot";
     private const string ManifestFileName = "install.json";
+    private const string HotkeyConfigFileName = "hotkeys.cfg";
+    private static readonly byte[] DefaultHotkeyConfig = Encoding.UTF8.GetBytes("""
+        [Hotkeys]
+
+        Pause="1 | NumPad1"
+        Resume="2 | NumPad2"
+        Intensity40="3 | NumPad3"
+        Intensity100="4 | NumPad4"
+        ActivateFiller="5 | NumPad5"
+        """);
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
     private readonly GodotGameInspector _inspector = new();
 
@@ -37,16 +47,18 @@ public sealed class GodotDiscoveryProvisioner
         var componentRoot = Path.Combine(gameRoot, RuntimeDirectoryName, ComponentDirectoryName);
         var scriptPath = Path.Combine(componentRoot, "gtracker_discovery.gd");
         var telemetryPath = Path.Combine(componentRoot, "telemetry.tsv");
+        var hotkeyConfigPath = Path.Combine(componentRoot, HotkeyConfigFileName);
         var manifestPath = Path.Combine(componentRoot, ManifestFileName);
         var overridePath = Path.Combine(gameRoot, "override.cfg");
         var backupPath = Path.Combine(componentRoot, "backup", "override.cfg");
-        ValidateManagedPaths(gameRoot, componentRoot, scriptPath, telemetryPath, manifestPath, overridePath, backupPath);
+        ValidateManagedPaths(gameRoot, componentRoot, scriptPath, telemetryPath, hotkeyConfigPath, manifestPath, overridePath, backupPath);
         if (File.Exists(manifestPath)) throw new IOException("A Godot discovery installation already exists. Remove it before reinstalling.");
         if (File.Exists(scriptPath) || File.Exists(backupPath))
             throw new IOException("Refusing to replace unowned files in the Godot discovery directory.");
 
         var overrideExisted = File.Exists(overridePath);
         var telemetryExisted = File.Exists(telemetryPath);
+        var hotkeyConfigExisted = File.Exists(hotkeyConfigPath);
         var originalOverride = overrideExisted ? File.ReadAllBytes(overridePath) : [];
         var script = GodotDiscoveryScript.Create(inspection.EngineMajorVersion, runtime);
         var installedOverride = GodotOverrideConfig.AddAutoload(originalOverride, scriptPath);
@@ -70,6 +82,7 @@ public sealed class GodotDiscoveryProvisioner
         {
             Stage(stage, Relative(gameRoot, scriptPath), Encoding.UTF8.GetBytes(script));
             if (!telemetryExisted) Stage(stage, Relative(gameRoot, telemetryPath), []);
+            if (!hotkeyConfigExisted) Stage(stage, Relative(gameRoot, hotkeyConfigPath), DefaultHotkeyConfig);
             Stage(stage, Relative(gameRoot, overridePath), installedOverride);
             if (overrideExisted) Stage(stage, Relative(gameRoot, backupPath), originalOverride);
             Stage(stage, Relative(gameRoot, manifestPath), JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOptions));
@@ -82,6 +95,7 @@ public sealed class GodotDiscoveryProvisioner
             if (overrideExisted) files.Add(Relative(gameRoot, backupPath));
             files.Add(Relative(gameRoot, scriptPath));
             if (!telemetryExisted) files.Add(Relative(gameRoot, telemetryPath));
+            if (!hotkeyConfigExisted) files.Add(Relative(gameRoot, hotkeyConfigPath));
             files.Add(Relative(gameRoot, overridePath));
             files.Add(Relative(gameRoot, manifestPath));
             InstallTransactional(stage, gameRoot, files, overridePath, originalOverride, overrideExisted, cancellationToken);
@@ -106,9 +120,10 @@ public sealed class GodotDiscoveryProvisioner
         var componentRoot = Path.Combine(gameRoot, RuntimeDirectoryName, ComponentDirectoryName);
         var scriptPath = Path.Combine(componentRoot, "gtracker_discovery.gd");
         var telemetryPath = Path.Combine(componentRoot, "telemetry.tsv");
+        var hotkeyConfigPath = Path.Combine(componentRoot, HotkeyConfigFileName);
         var manifestPath = Path.Combine(componentRoot, ManifestFileName);
         var overridePath = Path.Combine(gameRoot, "override.cfg");
-        ValidateManagedPaths(gameRoot, componentRoot, scriptPath, telemetryPath, manifestPath, overridePath);
+        ValidateManagedPaths(gameRoot, componentRoot, scriptPath, telemetryPath, hotkeyConfigPath, manifestPath, overridePath);
         if (!File.Exists(manifestPath)) throw new FileNotFoundException("Install Godot discovery before applying mappings.", manifestPath);
         var originalManifestBytes = File.ReadAllBytes(manifestPath);
         var manifest = JsonSerializer.Deserialize<GodotDiscoveryManifest>(originalManifestBytes,
@@ -120,6 +135,7 @@ public sealed class GodotDiscoveryProvisioner
             throw new IOException("The installed Godot discovery script was modified. Runtime update was stopped.");
 
         var installedScriptHash = manifest.ScriptSha256;
+        var hotkeyConfigExisted = File.Exists(hotkeyConfigPath);
         var script = GodotDiscoveryScript.Create(inspection.EngineMajorVersion, runtime);
         var scriptBytes = Encoding.UTF8.GetBytes(script);
         manifest.ScriptSha256 = Hash(scriptBytes);
@@ -134,7 +150,11 @@ public sealed class GodotDiscoveryProvisioner
         if (Hash(File.ReadAllBytes(manifestPath)) != Hash(originalManifestBytes) ||
             Hash(File.ReadAllBytes(scriptPath)) != installedScriptHash)
             throw new IOException("The Godot runtime changed while the update was being prepared.");
-        RemoveTransactional([new(scriptPath, scriptBytes), new(manifestPath, manifestBytes)]);
+        if (File.Exists(hotkeyConfigPath) != hotkeyConfigExisted)
+            throw new IOException("The Godot hotkey configuration changed while the runtime update was being prepared.");
+        var changes = new List<RemovalChange> { new(scriptPath, scriptBytes), new(manifestPath, manifestBytes) };
+        if (!hotkeyConfigExisted) changes.Add(new(hotkeyConfigPath, DefaultHotkeyConfig));
+        RemoveTransactional(changes);
         return new(gameRoot, overridePath, scriptPath, telemetryPath, manifestPath, manifest.OverrideExistedBeforeInstall);
     }
 
@@ -162,7 +182,8 @@ public sealed class GodotDiscoveryProvisioner
         var overridePath = Path.Combine(gameRoot, "override.cfg");
         var scriptPath = Path.Combine(componentRoot, "gtracker_discovery.gd");
         var telemetryPath = Path.Combine(componentRoot, "telemetry.tsv");
-        ValidateManagedPaths(gameRoot, componentRoot, manifestPath, overridePath, scriptPath, telemetryPath);
+        var hotkeyConfigPath = Path.Combine(componentRoot, HotkeyConfigFileName);
+        ValidateManagedPaths(gameRoot, componentRoot, manifestPath, overridePath, scriptPath, telemetryPath, hotkeyConfigPath);
         if (!File.Exists(manifestPath)) throw new FileNotFoundException("The Godot discovery ownership manifest was not found.", manifestPath);
         var manifest = JsonSerializer.Deserialize<GodotDiscoveryManifest>(File.ReadAllBytes(manifestPath),
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? throw new InvalidDataException("Godot discovery manifest is invalid.");
@@ -205,8 +226,9 @@ public sealed class GodotDiscoveryProvisioner
             ]);
         }
         DeleteEmptyDirectories(Path.Combine(componentRoot, "backup"), componentRoot);
-        // Telemetry is intentionally preserved for later mapping and troubleshooting.
-        if (!File.Exists(telemetryPath)) DeleteEmptyDirectories(componentRoot, Path.Combine(gameRoot, RuntimeDirectoryName));
+        // Telemetry and user-editable hotkeys are intentionally preserved.
+        if (!File.Exists(telemetryPath) && !File.Exists(hotkeyConfigPath))
+            DeleteEmptyDirectories(componentRoot, Path.Combine(gameRoot, RuntimeDirectoryName));
     }
 
     private static void ValidateManifest(GodotDiscoveryManifest manifest, string executablePath, string gameRoot)

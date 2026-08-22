@@ -94,18 +94,22 @@ internal static class GodotDiscoveryScript
         const POLL_SECONDS = 0.10
         const RUNTIME_UPDATE_SECONDS = 0.25
         const TELEMETRY_UPDATE_SECONDS = 1.0
+        const HOTKEY_RELOAD_SECONDS = 1.0
         const TELEMETRY_RELATIVE_PATH = "GTrackerRuntime/Godot/telemetry.tsv"
+        const HOTKEY_RELATIVE_PATH = "GTrackerRuntime/Godot/hotkeys.cfg"
         const EDI_BASE_URL = __EDI_BASE_URL__
 
         var _elapsed = 0.0
         var _runtime_update_elapsed = 0.0
         var _telemetry_update_elapsed = 0.0
+        var _hotkey_reload_elapsed = 0.0
         var _scene_id = 0
         var _scene_name = ""
         var _players = {}
         var _owners = {}
         var _states = {}
         var _telemetry_path = ""
+        var _hotkey_path = ""
         var _telemetry_lines = []
         var _scene_mappings = __SCENE_MAPPINGS__
         var _animation_mappings = __ANIMATION_MAPPINGS__
@@ -118,12 +122,18 @@ internal static class GodotDiscoveryScript
         var _http = null
         var _edi_queue = []
         var _edi_busy = false
+        var _hotkeys = {}
+        var _hotkey_values = {}
+        var _hotkey_states = {}
+        var _hotkey_focused = false
+        var _hotkey_load_error = OK
 
 
         func _ready():
             pause_mode = Node.PAUSE_MODE_PROCESS
             var game_root = OS.get_executable_path().get_base_dir()
             _telemetry_path = game_root.plus_file(TELEMETRY_RELATIVE_PATH)
+            _hotkey_path = game_root.plus_file(HOTKEY_RELATIVE_PATH)
             _index_animation_mappings()
             get_tree().connect("node_added", self, "_on_node_added")
             _index_node(get_tree().root)
@@ -132,8 +142,11 @@ internal static class GodotDiscoveryScript
                 _http.timeout = 2.0
                 add_child(_http)
                 _http.connect("request_completed", self, "_on_edi_completed")
+            _load_hotkeys()
+            _hotkey_focused = OS.is_window_focused()
+            _sync_hotkey_states()
             _emit("SESSION", "", "", "observer-started", "engine=godot3")
-            _emit("CAPABILITY", "", "", "AnimationPlayer", "support=runtime-observer+edi")
+            _emit("CAPABILITY", "", "", "AnimationPlayer", "support=runtime-observer+edi+hotkeys")
             call_deferred("_poll_scene")
 
 
@@ -145,6 +158,7 @@ internal static class GodotDiscoveryScript
 
 
         func _process(delta):
+            _poll_hotkeys(delta)
             _elapsed += delta
             _runtime_update_elapsed += delta
             _telemetry_update_elapsed += delta
@@ -160,6 +174,136 @@ internal static class GodotDiscoveryScript
                 _runtime_update_elapsed = 0.0
             if emit_telemetry_update:
                 _telemetry_update_elapsed = 0.0
+
+
+        func _poll_hotkeys(delta):
+            _hotkey_reload_elapsed += delta
+            if _hotkey_reload_elapsed >= HOTKEY_RELOAD_SECONDS:
+                _hotkey_reload_elapsed = 0.0
+                if _load_hotkeys():
+                    _sync_hotkey_states()
+            var focused = OS.is_window_focused()
+            if focused != _hotkey_focused:
+                _hotkey_focused = focused
+                _sync_hotkey_states()
+                return
+            for action in _hotkeys.keys():
+                var down = _is_hotkey_down(_hotkeys[action])
+                if focused and down and not _hotkey_states.get(action, false):
+                    _activate_hotkey(action)
+                _hotkey_states[action] = down
+
+
+        func _activate_hotkey(action):
+            match action:
+                "Pause":
+                    _queue_post("/Pause?untilResume=true")
+                "Resume":
+                    _queue_post("/Resume?AtCurrentTime=false")
+                "Intensity40":
+                    _queue_post("/Intensity/40")
+                "Intensity100":
+                    _queue_post("/Intensity/100")
+                "ActivateFiller":
+                    _play("filler", 0, "hotkey")
+            _emit("HOTKEY", _scene_name, "", action, "")
+
+
+        func _load_hotkeys():
+            var config = ConfigFile.new()
+            var error = config.load(_hotkey_path)
+            if error != OK:
+                if error != _hotkey_load_error:
+                    _emit("HOTKEY_ERROR", _scene_name, "", "config-load", "error=" + str(error))
+                _hotkey_load_error = error
+                return false
+            _hotkey_load_error = OK
+            var defaults = {
+                "Pause": "1 | NumPad1",
+                "Resume": "2 | NumPad2",
+                "Intensity40": "3 | NumPad3",
+                "Intensity100": "4 | NumPad4",
+                "ActivateFiller": "5 | NumPad5"
+            }
+            var loaded = {}
+            var loaded_values = {}
+            var changed = _hotkey_values.empty()
+            for action in defaults.keys():
+                var value = str(config.get_value("Hotkeys", action, defaults[action]))
+                var parsed = _parse_hotkey(value)
+                loaded[action] = parsed["keys"]
+                loaded_values[action] = value
+                var value_changed = not _hotkey_values.has(action) or _hotkey_values[action] != value
+                if value_changed:
+                    changed = true
+                if value_changed and not parsed["invalid"].empty():
+                    _emit("HOTKEY_ERROR", _scene_name, "", action, "invalid=" + PoolStringArray(parsed["invalid"]).join(","))
+            _hotkeys = loaded
+            _hotkey_values = loaded_values
+            if changed:
+                _emit("HOTKEY_CONFIG", _scene_name, "", "reloaded", "")
+            return changed
+
+
+        func _parse_hotkey(value):
+            var keys = []
+            var invalid = []
+            var text = str(value).strip_edges()
+            if text == "" or text.to_lower() == "none":
+                return {"keys": keys, "invalid": invalid}
+            for item in text.split("|", false):
+                var token = str(item).strip_edges()
+                var key = _parse_key(token)
+                if key > 0:
+                    if not key in keys:
+                        keys.append(key)
+                elif token != "":
+                    invalid.append(token)
+            return {"keys": keys, "invalid": invalid}
+
+
+        func _parse_key(token):
+            if token.length() == 1:
+                var character = token.to_upper()
+                if character in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789":
+                    return character.ord_at(0)
+                var punctuation = {";": KEY_SEMICOLON, "=": KEY_EQUAL, "+": KEY_EQUAL, ",": KEY_COMMA, "-": KEY_MINUS, ".": KEY_PERIOD, "/": KEY_SLASH, "`": KEY_QUOTELEFT, "~": KEY_QUOTELEFT, "[": KEY_BRACKETLEFT, "\\": KEY_BACKSLASH, "]": KEY_BRACKETRIGHT, "'": KEY_APOSTROPHE, "\"": KEY_APOSTROPHE}
+                return punctuation.get(token, 0)
+            var normalized = token.replace("_", "").replace("-", "").to_upper()
+            if normalized.length() == 2 and normalized.begins_with("D") and normalized[1] in "0123456789":
+                return normalized.ord_at(1)
+            if normalized.begins_with("NUMPAD") and normalized.length() == 7 and normalized[6] in "0123456789":
+                return KEY_KP_0 + int(normalized.substr(6, 1))
+            if normalized.begins_with("F") and normalized.substr(1).is_valid_integer():
+                var function = int(normalized.substr(1))
+                if function >= 1 and function <= 16:
+                    return KEY_F1 + function - 1
+            var named = {
+                "BACKSPACE": KEY_BACKSPACE, "TAB": KEY_TAB, "ENTER": KEY_ENTER, "RETURN": KEY_ENTER,
+                "SHIFT": KEY_SHIFT, "CTRL": KEY_CONTROL, "CONTROL": KEY_CONTROL, "ALT": KEY_ALT,
+                "PAUSE": KEY_PAUSE, "BREAK": KEY_PAUSE, "CAPSLOCK": KEY_CAPSLOCK, "ESC": KEY_ESCAPE,
+                "ESCAPE": KEY_ESCAPE, "SPACE": KEY_SPACE, "PAGEUP": KEY_PAGEUP, "PAGEDOWN": KEY_PAGEDOWN,
+                "END": KEY_END, "HOME": KEY_HOME, "LEFT": KEY_LEFT, "UP": KEY_UP, "RIGHT": KEY_RIGHT,
+                "DOWN": KEY_DOWN, "PRINTSCREEN": KEY_PRINT, "INSERT": KEY_INSERT, "DELETE": KEY_DELETE,
+                "NUMLOCK": KEY_NUMLOCK, "SCROLLLOCK": KEY_SCROLLLOCK, "SEMICOLON": KEY_SEMICOLON,
+                "EQUALS": KEY_EQUAL, "PLUS": KEY_EQUAL, "COMMA": KEY_COMMA, "MINUS": KEY_MINUS,
+                "PERIOD": KEY_PERIOD, "DOT": KEY_PERIOD, "SLASH": KEY_SLASH, "BACKTICK": KEY_QUOTELEFT,
+                "TILDE": KEY_QUOTELEFT, "LEFTBRACKET": KEY_BRACKETLEFT, "BACKSLASH": KEY_BACKSLASH,
+                "RIGHTBRACKET": KEY_BRACKETRIGHT, "APOSTROPHE": KEY_APOSTROPHE, "QUOTE": KEY_APOSTROPHE
+            }
+            return named.get(normalized, 0)
+
+
+        func _is_hotkey_down(keys):
+            for key in keys:
+                if Input.is_key_pressed(key):
+                    return true
+            return false
+
+
+        func _sync_hotkey_states():
+            for action in _hotkeys.keys():
+                _hotkey_states[action] = _is_hotkey_down(_hotkeys[action])
 
 
         func _on_node_added(node):
